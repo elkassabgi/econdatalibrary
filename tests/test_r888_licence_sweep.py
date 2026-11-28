@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 import types
 
 import pytest
@@ -98,6 +99,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(T, "tool_sha", lambda: "f" * 40)
     monkeypatch.setattr(T, "code_named", lambda ids: (set(), "0" * 40))
     monkeypatch.setattr(T, "history_members", lambda: set(FAKE) | set(FORMER))
+    monkeypatch.setattr(T, "OLDER_COPY", str(tmp_path / "older.db"))   # --plan's default; never the real F: copy
     db = proof / "proof.db"
     make_db(db)
     n = {"i": 0}
@@ -288,7 +290,8 @@ def test_tree_clean_sees_an_edit_and_an_untracked_input(repo):
 # ---- plan / apply ----------------------------------------------------------------------------------------------
 def test_plan_prints_no_count_and_no_member(env):
     rc, out, st, tok = plan(env)
-    digit_free = all(not any(ch.isdigit() for ch in ln.replace("B34", "")) for ln in out.splitlines()
+    digit_free = all(not any(ch.isdigit() for ch in ln.replace("B34", "").replace("K1N", ""))   # class labels only
+                     for ln in out.splitlines()
                      if ln.startswith(("licence rows", "   ...", "unreferenced rows")))
     with open(st, encoding="utf-8") as f:
         body = json.load(f)["body"]
@@ -359,7 +362,8 @@ def test_code_named_rows_are_kept(env, monkeypatch):
     rc2, out2 = run(["--sweep", "--db", db2, "--workers", "1"])
     ids = licence_ids(db2)
     ok = [rc == 0, {"named-clean", "named-qqx-terms"} <= ids, "clean-orphan" not in ids,
-          "unreferenced rows a tracked file names, carrying a member (KEPT; B34's code PR first): YES" in out0,
+          "unreferenced rows a tracked file names, carrying a member of today's gate (K1N; KEPT; B34's code PR "
+          "first): YES" in out0,
           rc2 == 0, "K1N HELD        an unreferenced row a tracked file names that carries a member: YES" in out2]
     assert all(ok)
 
@@ -567,6 +571,12 @@ def live(env, monkeypatch):
     monkeypatch.setattr(T, "ROOT", str(env["live"]))
     for n in ("STOP_DISPATCH", "local_heavy.DONE"):
         (env["live"] / "logs" / n).write_text("")
+    # S4's holds (verify N5): two FAKE guard jobs, each with a fresh .PAUSED, and no process running either script
+    monkeypatch.setattr(T, "guard_jobs", lambda: [("fakejob_one", "ingest_fakejob_one.py"),
+                                                   ("fakejob_two", "fakejob_two_lane.py")])
+    monkeypatch.setattr(T, "running_cmdlines", lambda: ["python other_thing.py"])
+    for n in ("fakejob_one", "fakejob_two"):
+        (env["live"] / "logs" / f"{n}.PAUSED").write_text("")
     return str(build)
 
 
@@ -579,6 +589,35 @@ def test_live_needs_the_writers_held(env, live):
     os.remove(env["live"] / "logs" / "local_heavy.lock")
     rc, _o, _st, _tok = plan(env, db=live, live=True)
     assert a and b and rc == 0
+
+
+def test_live_needs_s4s_holds_not_only_s1s(env, live, monkeypatch):
+    """Verify N5: STOP_DISPATCH and local_heavy.DONE are set at S1; --live also needs every guard job held."""
+    logs = env["live"] / "logs"
+    os.remove(logs / "fakejob_two.PAUSED")
+    missing = _refused(["--sweep", "--live", "--db", live])
+    (logs / "fakejob_two.DONE").write_text("")                      # a retired job needs no .PAUSED
+    done_ok = plan(env, db=live, live=True)[0] == 0
+    old = time.time() - 3 * 3600
+    os.utime(logs / "fakejob_one.PAUSED", (old, old))               # older than the guard's 120 minutes
+    stale = _refused(["--sweep", "--live", "--db", live])
+    (logs / "fakejob_one.PAUSED").write_text("")
+    monkeypatch.setattr(T, "running_cmdlines", lambda: ["C:\\py\\python.exe -u jobs/ingest_fakejob_one.py"])
+    running = _refused(["--sweep", "--live", "--db", live])
+    monkeypatch.setattr(T, "running_cmdlines", lambda: [])
+    monkeypatch.setattr(T, "guard_jobs", lambda: [])
+    unreadable = _refused(["--sweep", "--live", "--db", live])
+    rc, out = run(["--sweep", "--live", "--db", live])
+    assert missing and done_ok and stale and running and unreadable and no_fake_job_name(out)
+
+
+def no_fake_job_name(text: str) -> bool:
+    return "fakejob" not in text
+
+
+def test_guard_jobs_are_read_from_the_versioned_guard_copy():
+    jobs = dict(T.guard_jobs())
+    assert len(jobs) >= 2 and all(m.endswith(".py") for m in jobs.values())
 
 
 def test_live_apply_and_vacuum_take_the_writer_lock(env, live, monkeypatch):
@@ -654,29 +693,31 @@ def test_signatures_are_seen_before_and_gone_after(env):
     assert all(ok)
 
 
-def test_an_image_in_dead_space_at_a_chunk_edge_is_not_called_live(env, monkeypatch):
-    """Code review r3 C2: the bytes re-read from the previous chunk's tail must not be classified as live."""
-    db = os.path.join(env["proof"], "edge.db")
+def test_c2_image_wholly_inside_the_tail_on_a_live_page_is_not_live(env, monkeypatch):
+    """Review r3 C2, the verifier's discriminating shape (verify N4): the image sits in a FREEBLOCK of a LIVE b-tree
+    page at the page end (not on a free page, where every version says DEAD), and a second, longer signature makes
+    the re-read tail long enough to hold it whole. The pre-C2 residue_scan called it LIVE; this one must not."""
+    db = os.path.join(env["proof"], "tail.db")
     c = sqlite3.connect(db)
     c.execute("PRAGMA secure_delete=OFF")
     c.execute("CREATE TABLE license (license_id TEXT PRIMARY KEY, name TEXT)")
-    c.execute("CREATE TABLE t (a TEXT, b TEXT)")
-    c.execute("INSERT INTO t VALUES ('zzsig-alpha-unique', 'second-value-xyz')")   # the first cell: the page END
-    c.execute("CREATE TABLE z (x TEXT)")                              # a page AFTER t's, so t's tail is re-read
+    c.execute("CREATE TABLE t (a TEXT)")
+    val = "zzsig-short-" + "y" * 150                          # payload >= 128 bytes: a 2-byte length varint
+    c.execute("INSERT INTO t (rowid, a) VALUES (1000000, ?)", (val,))   # 3-byte rowid varint; FIRST cell = page end
+    c.execute("INSERT INTO t (rowid, a) VALUES (1000001, 'keeper-row')")
+    c.execute("CREATE TABLE z (x TEXT)")
     c.execute("INSERT INTO z VALUES ('after')")
     c.commit()
-    c.close()
-    sig = T.record_image(("zzsig-alpha-unique", "second-value-xyz"), True)
-    monkeypatch.setattr(T, "RAW_CHUNK_PAGES", 1)                    # every page edge is a chunk edge
-    live = T.residue_scan(db, T.Gate(FAKE), sigs=[sig])
-    c = sqlite3.connect(db)
-    c.execute("PRAGMA secure_delete=OFF")
-    c.execute("DROP TABLE t")                                         # its page goes to the freelist, bytes intact
+    c.execute("DELETE FROM t WHERE rowid = 1000000")         # a freeblock on a LIVE page; the record survives
     c.commit()
     c.close()
-    dead = T.residue_scan(db, T.Gate(FAKE), sigs=[sig])
-    ok = [live["SIG_SEEN"], live["SIG_LIVE"], dead["SIG_SEEN"], dead["SIG_DEAD"], not dead["SIG_LIVE"],
-          dead["measured"]]
+    short = T.record_image((val,), True)
+    long_ = b"\x7f\x7e" * (len(short) // 2 + 20)            # found nowhere; makes keep >= len(short)
+    monkeypatch.setattr(T, "RAW_CHUNK_PAGES", 1)
+    with open(db, "rb") as fh:
+        data = fh.read()
+    r = T.residue_scan(db, T.Gate(FAKE), sigs=[short, long_])
+    ok = [short in data, r["measured"], r["SIG_DEAD"], not r["SIG_LIVE"], not r["SIG_SEEN"]]   # long_ is unseen
     assert all(ok)
 
 
@@ -696,6 +737,214 @@ def test_vacuum_keeps_fts_rowids(env):
     b = c.execute("SELECT rowid, series_id FROM series_fts ORDER BY rowid").fetchall()
     c.close()
     assert a == b
+
+
+# ---- the independent verify's findings (VERIFY.md N1-N3, N6, N7, N11) --------------------------------------------
+def test_k1n_counts_today_s_gate_only_and_reports_former_members_as_info(env, monkeypatch):
+    """N1: a code-named row whose only member is a FORMER one (hosted again today, say) is not K1N - B34 must be
+    able to finish - but is reported as INFO; a today-gate member still makes K1N YES."""
+    db = os.path.join(env["proof"], "k1n.db")
+    make_db(db, licences=LICENCES + [("named-oldgone-delta-terms", "x", 1, 0, 1, 0, None)])
+    monkeypatch.setattr(T, "code_named", lambda ids: ({i for i in ids if i.startswith("named-")}, "0" * 40))
+    rc, out = run(["--sweep", "--db", db, "--workers", "1", "--licence-only"])
+    rc2, out2, _st, _tok = plan(env, db=db)
+    db2 = os.path.join(env["proof"], "k1n2.db")
+    make_db(db2, licences=LICENCES + NAMED)
+    rc3, out3 = run(["--sweep", "--db", db2, "--workers", "1", "--licence-only"])
+    ok = ["K1N HELD        an unreferenced row a tracked file names that carries a member: NO" in out,
+          "carrying only a former member or a plain-substring hit (KEPT, INFO): YES" in out2,
+          "K1N HELD        an unreferenced row a tracked file names that carries a member: YES" in out3]
+    assert all(ok)
+
+
+def test_sep5b_partial_concatenation_is_a_sense_and_never_reaches_the_backup(env, monkeypatch):
+    """N2: a 3-part member written with only SOME separators dropped (aa_bbb_cc as aabbb-cc) fires SEP5B, so such
+    an unreferenced row is deleted as a member row and is never written to the backup."""
+    g = T.Gate({"aa_bbb_cc"})
+    sense = "SEP5B" in g.cell("terms of aabbb-cc data") and "SEP5B" in g.cell("AA BBBCC") and \
+        not g.cell("aaxbbbcc") and "SEP5B" not in g.cell("aabbb-ccx")
+    members = set(FAKE) | {"aa_bbb_cc"}
+    monkeypatch.setattr(T.gen_denylist, "committed_gate", lambda src=None: set(members))
+    monkeypatch.setattr(T, "history_members", lambda: set(members) | set(FORMER))
+    db = os.path.join(env["proof"], "sep.db")
+    make_db(db, licences=LICENCES + [("orphan-x", "terms of aabbb-cc data", 1, 0, 1, 0, None)])
+    _rc, _o, st, tok = plan(env, db=db)
+    rc, out = apply(env, st, tok, db=db)
+    backups = sorted(p for p in os.listdir(env["proof"]) if p.startswith("backup"))
+    with open(os.path.join(env["proof"], backups[-1]), encoding="utf-8") as f:
+        btxt = f.read()
+    ok = [sense, rc == 0, "APPLY PASS" in out, "orphan-x" not in licence_ids(db), "aabbb-cc" not in btxt,
+          "orphan-x" not in btxt, "clean-orphan" in btxt]
+    assert all(ok)
+
+
+_KILL_ME = '''import sqlite3, sys, time
+c = sqlite3.connect(sys.argv[1], isolation_level=None)
+c.execute("PRAGMA cache_size=-256")
+c.execute("BEGIN IMMEDIATE")
+c.execute("UPDATE license SET name = name || ' changed'")
+c.execute("CREATE TABLE junk (v TEXT)")
+c.executemany("INSERT INTO junk VALUES (?)", [("j" * 2000,)] * 3000)
+print("ready", flush=True)
+time.sleep(120)
+'''
+
+
+def _killed_writer(tmp_path, db):
+    """A writer killed in the middle of its transaction, after its page cache spilled into the file (so the file
+    itself holds uncommitted pages): (it reached the kill point, the file grew)."""
+    size0 = os.path.getsize(db)
+    script = tmp_path / "kill_me.py"
+    script.write_text(_KILL_ME)
+    p = subprocess.Popen([sys.executable, "-B", str(script), db], stdout=subprocess.PIPE, text=True)
+    try:
+        line = p.stdout.readline()
+    finally:
+        p.kill()
+        p.wait(timeout=60)
+    return line.strip() == "ready", os.path.getsize(db) > size0
+
+
+def _tables(db):
+    c = sqlite3.connect(db)
+    try:
+        return {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}, \
+            [r[0] for r in c.execute("SELECT name FROM license")]
+    finally:
+        c.close()
+
+
+def test_a_hot_journal_is_named_do_not_delete_and_recover_rolls_it_back(env, tmp_path):
+    """N3: a writer killed mid-transaction leaves a HOT journal. Every mode refuses and says DO NOT DELETE; --recover
+    rolls it back (the file's rows are the pre-transaction ones again) and quick_check is ok."""
+    before = licence_ids(env["db"])
+    killed, spilled = _killed_writer(tmp_path, env["db"])
+    hot = cp.journal_is_hot(env["db"] + "-journal")
+    refusals = [run([m, "--db", env["db"]] + x) for m, x in (("--sweep", ["--licence-only"]), ("--residue", []),
+                                                             ("--plan", ["--state", env["fresh"]("state")]))]
+    rc2, out2 = run(["--recover", "--db", env["db"]])
+    tables, names = _tables(env["db"])
+    ok = [killed, spilled, hot, all(rc == 2 and "DO NOT DELETE" in out for rc, out in refusals),
+          rc2 == 0, "RECOVER PASS" in out2, not cp.journal_is_hot(env["db"] + "-journal"),
+          licence_ids(env["db"]) == before, "junk" not in tables, not any(n.endswith(" changed") for n in names)]
+    assert all(ok)
+
+
+def test_a_non_hot_journal_is_refused_with_its_own_message(env):
+    with open(env["db"] + "-journal", "wb") as f:
+        f.write(b"\x00" * 512)                                   # a PERSIST leftover: zeroed header, not hot
+    rc, out = run(["--sweep", "--db", env["db"]])
+    rc2, _o2 = run(["--recover", "--db", env["db"]])
+    assert rc == 2 and "NON-hot" in out and rc2 == 2
+
+
+def test_live_recover_goes_through_the_writer_lock(env, live, tmp_path, monkeypatch):
+    seen = []
+    real = cp.writer_lock
+
+    @contextlib.contextmanager
+    def spy():
+        with real():
+            seen.append(cp._held is not None)
+            yield
+    monkeypatch.setattr(cp, "writer_lock", spy)
+    killed, spilled = _killed_writer(tmp_path, live)
+    rc, out = run(["--recover", "--live", "--db", live])
+    tables, _names = _tables(live)
+    assert killed and spilled and rc == 0 and "RECOVER PASS" in out and seen == [True] and "junk" not in tables
+
+
+def test_a_member_in_a_table_name_is_a_fail_and_the_name_is_withheld(env):
+    """N6: a table whose name carries a member makes the sweep FAIL, and no printed name carries the member."""
+    db = os.path.join(env["proof"], "n6.db")
+    make_db(db)
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE zzq_beta_extra (v TEXT)")
+    c.execute("INSERT INTO zzq_beta_extra VALUES ('plain text')")
+    c.commit()
+    c.close()
+    rc, out = run(["--sweep", "--db", db, "--workers", "1"])
+    rc0, out0 = run(["--sweep", "--db", env["db"], "--workers", "1"])          # the same file without that table
+    ok = [rc == 1, "a table/index/trigger name or its SQL carries a member in a bounded sense: YES" in out,
+          any(ln.startswith("SWEEP FAIL") and "sqlite_master" in ln for ln in out.splitlines()),
+          "[name withheld]" in out, no_fake_member(out),
+          "a table/index/trigger name or its SQL carries a member in a bounded sense: NO" in out0,
+          not any(ln.startswith("SWEEP FAIL") and "sqlite_master" in ln for ln in out0.splitlines())]
+    assert all(ok)
+
+
+def test_plan_reports_the_older_copy_line_before_any_delete(env):
+    """N7: the operator learns at --plan time, and again before COMMIT, whether a member row that gets no backup has
+    another copy."""
+    make_db(env["older"], licences=[r for r in LICENCES if not r[0].startswith("cc-by")])
+    rc, out, st, tok = plan(env)
+    rc2, out2 = apply(env, st, tok, extra=["--no-vacuum"])
+    lines = out2.splitlines()
+    pre = next((i for i, ln in enumerate(lines) if ln.startswith("before COMMIT: a member-carrying row to delete is "
+                                                                 "absent from the older F: copy") and
+                ln.endswith(": YES")), None)
+    com = next((i for i, ln in enumerate(lines) if ln.startswith("delete transaction committed")), None)
+    ok = [rc == 0, "absent from the older F: copy (no F: copy would hold it after the delete; it gets no backup): YES"
+          in out, rc2 == 0, pre is not None, com is not None, pre is not None and com is not None and pre < com]
+    assert all(ok)
+
+
+def test_the_backup_is_fsynced_before_the_delete_commits(env, monkeypatch):
+    """N8: the sealed backup reaches the disk while the rows it holds are still committed in the file."""
+    _rc, _o, st, tok = plan(env)
+    seen = []
+    real = os.fsync
+
+    def spy(fd):
+        seen.append("clean-orphan" in licence_ids(env["db"]))      # another connection sees only committed rows
+        return real(fd)
+    monkeypatch.setattr(T.os, "fsync", spy)
+    rc, _out = apply(env, st, tok, extra=["--no-vacuum"])
+    assert rc == 0 and seen[:1] == [True] and "clean-orphan" not in licence_ids(env["db"])
+
+
+def test_a_case_or_space_variant_reference_still_protects_its_row(env):
+    """N11 (a): a series row whose license_id differs from the licence row only by case and padding is a reference
+    (a case-insensitive reader would find the row), so the row is never selected. An exact reader finds no row, so
+    the same reference is also reported dangling - plan FAIL, apply refused, nothing deleted."""
+    db = os.path.join(env["proof"], "fold.db")
+    make_db(db, series=_series() + [("hostsrc:F", "hostsrc", "t", "A", None, None, None, " CLEAN-ORPHAN ", None,
+                                     None, None, "{}")])
+    c = sqlite3.connect(db)
+    try:
+        s = T.selection(c, T.Gate(FAKE), T.Gate(FAKE | FORMER), with_code=False)
+    finally:
+        c.close()
+    rc1, _o, st, tok = plan(env, db=db)
+    before = licence_ids(db)
+    rc2, _o2 = apply(env, st, tok, db=db)
+    ok = ["clean-orphan" not in s["unref"], "clean-orphan" not in s["delete"], "lic-oldgone-delta" in s["delete"],
+          s["st"]["dangling"], rc1 == 1, rc2 == 2, licence_ids(db) == before]
+    assert all(ok)
+
+
+def test_an_image_the_raw_scan_cannot_see_refuses_the_apply(env, monkeypatch):
+    """N11 (b): the before-delete control - if any deleted row's record image is not found, nothing is deleted."""
+    real = T.row_signatures
+    monkeypatch.setattr(T, "row_signatures", lambda con, p, ids: real(con, p, ids) + [b"\x7f\x7e\x7d never here"])
+    _rc, _o, st, tok = plan(env)
+    before = licence_ids(env["db"])
+    rc, out = apply(env, st, tok)
+    assert rc == 2 and "cannot see every row" in out and licence_ids(env["db"]) == before
+
+
+def test_a_dangling_reference_fails_plan_apply_and_sweep(env):
+    """N11 (c): a series license_id that names no licence row."""
+    db = os.path.join(env["proof"], "dangle.db")
+    make_db(db, series=_series() + [("hostsrc:D", "hostsrc", "t", "A", None, None, None, "lic-missing", None, None,
+                                     None, "{}")])
+    rc1, out1, st, tok = plan(env, db=db)
+    before = licence_ids(db)
+    rc2, out2 = apply(env, st, tok, db=db)
+    rc3, out3 = run(["--sweep", "--db", db, "--licence-only"])
+    ok = [rc1 == 1, "PLAN FAIL" in out1, rc2 == 2, licence_ids(db) == before,
+          "K6  FAIL-class  a license_id reference names no licence row (dangling): YES" in out3, rc3 == 1]
+    assert all(ok)
 
 
 # ---- the R888 scan of this build item's own files, against the REAL gate ----------------------------------------

@@ -41,7 +41,8 @@ MODES (all need --db; every mode refuses a path the rules under PATHS do not acc
              --licence-only, license + source + sqlite_master). Big rowid tables are sharded over --workers
              processes; per shard rows read == COUNT(*); the file's identity and change counter must not move.
                K1A FAIL  an unreferenced licence row that no tracked file names (after --apply there is none)
-               K1N HELD  an unreferenced row a tracked file names that carries a member (B34's code PR; plan (v4))
+               K1N HELD  an unreferenced row a tracked file names that carries a member of TODAY's gate in a bounded
+                         sense (B34's code PR; plan (v4)); a former member only, or a plain substring: --plan INFO
                K2  FAIL  rows of a deny-listed source: a source_id equal to a member (also re-spelled), or a series
                          key prefix that is a member and not a committed SERIES_CARVEOUTS code
                K2C HELD  series keys under a member that ARE committed carve-outs (served by design)
@@ -57,6 +58,11 @@ MODES (all need --db; every mode refuses a path the rules under PATHS do not acc
              under a SHARED transaction. FREE (freelist trunk and leaf pages), UNALLOC (the gap after a b-tree page's
              cell-pointer array, and its freeblocks; stale copies of LIVE cells also sit there), sidecar files.
              YES/NO per region, never a size or a page count. The lock-byte page (offset 1 GiB) is skipped.
+  --recover  a HOT rollback journal beside the file (a writer, or this tool's delete or VACUUM, died mid-transaction;
+             a VACUUM's journal holds the whole pre-VACUUM file): every other mode refuses and says DO NOT DELETE THE
+             -journal FILE. --recover --live takes core.catalog_path.writer_lock(), whose _recover_hot_journal opens
+             the build read-write so SQLite rolls the journal back; on a proof copy one read-write open and one read
+             do the same. Receipt: no hot journal, no -wal/-shm, quick_check ok (verify N3).
 
 MATCHING (L1, exact). base(s): an all-ASCII string is lower-cased; any other string is NFKC-normalised, the
 zero-width characters U+200B U+200C U+200D U+2060 U+FEFF U+00AD are removed, the Unicode dashes U+2010-U+2015,
@@ -68,18 +74,24 @@ A cell is also read URL-unquoted when it holds a '%'. Senses of a member g (case
   SUB5   g of length >= 5 as a plain substring        SUBALL  g (or norm(g)) as a plain substring, any length
   SEPN   (g has a separator) norm(g) inside norm(cell) with no [a-z0-9] neighbour - the R2253 '-' vs '_' class
   CONCAT (g has a separator and is >= 5 long without it) g with its separators removed, no [a-z0-9] neighbour
+  SEP5B  (g has a separator and is >= 5 long) EACH internal separator written as . _ - space or nothing, on its
+         own (aa_bbb_cc as aabbb-cc too), no [a-z0-9] neighbour - the R888 investigator's sense
 A cell CARRIES a member when any sense fires (the broad matcher: STRICT, SEP5B and SUBALL, plan rev 6.7).
 
 PATHS. A path that starts with two slashes (UNC, \\\\?\\, \\\\.\\) is refused; the real path must be an existing file
 with link count 1 (the shared 11-16 copy has 5) and no -journal/-wal/-shm beside it; the header must say rollback
 journal and UTF-8. The inputs this tool reads from the checkout (denylist.ts, util.ts, the licence verdict file, the
-two audit parsers, gen_denylist.py and this file) must equal HEAD (git status clean for them - code review M3).
+two audit parsers, gen_denylist.py, core/catalog_path.py, core/cutover.py, the guard copy and this file) must equal
+HEAD (git status clean for them - code review M3).
 WITHOUT --live: the real path must be under PROOF_ROOTS, must not be the build (os.path.samefile) or under the live
 checkout or E:\\econ_live, and the CUTOVER flag must be absent. WITH --live (the named step S4d, before S5 and S7c,
 so BEFORE the flag; also S10b): the path must be the build itself, this tool must run from the production checkout,
-the writers must be held (logs\\STOP_DISPATCH and logs\\local_heavy.DONE present, logs\\local_heavy.lock and
-logs\\statcan_writer.lock absent), and --apply/--vacuum take core.catalog_path.writer_lock() themselves (it works
-before the flag; write_session() takes no lock before T0).
+the writers must be held AS AT S4, not only S1 (verify N5): logs\\STOP_DISPATCH and logs\\local_heavy.DONE present,
+logs\\local_heavy.lock and logs\\statcan_writer.lock absent, a fresh logs\\<job>.PAUSED (younger than the guard's
+120 minutes less 5) for every job of the guard's list (read from tools/machine/RELAUNCH_GUARD.ps1.workstation-copy)
+that has no logs\\<job>.DONE, and no running python process whose command line holds a job's script (an unreadable
+list or process table refuses; job names are never printed). --apply/--vacuum/--recover take
+core.catalog_path.writer_lock() themselves (it works before the flag; write_session() takes no lock before T0).
 
 Run from the repo root:  python tools/selfhost/r888_licence_sweep.py --plan --db <path> --state <new file>
 """
@@ -113,9 +125,10 @@ LIVE_AREAS = (r"E:\econ_live",)                 # plus catalog_path.LIVE_STORE_R
 OLDER_COPY = r"F:\work\owed_pay\20261117\catalog_copy.db"   # read mode=ro&immutable=1 only (BUILDER_RULES)
 GATE_FILE = "api/worker/src/denylist.ts"
 TOOL_REL = "tools/selfhost/r888_licence_sweep.py"
+GUARD_COPY = "tools/machine/RELAUNCH_GUARD.ps1.workstation-copy"     # --live: the guard's job list (verify N5)
 HEAD_INPUTS = (GATE_FILE, "api/worker/src/util.ts", "DATABASE_LICENSES_VERBATIM.md", "core/gen_denylist.py",
                "tools/audit_license_coverage.py", "tools/audit_schedule_coverage.py", "core/catalog_path.py",
-               "core/cutover.py", TOOL_REL)
+               "core/cutover.py", GUARD_COPY, TOOL_REL)
 RAW_CHUNK_PAGES = 1024                          # pages per raw read (tests make it 1 to put every edge at a page)
 SIDE = ("-journal", "-wal", "-shm")
 SHARD_ROWS = 1_000_000                          # a rowid table with more rows than this is sharded
@@ -141,7 +154,7 @@ _DASHES = frozenset("\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0
 _SEPS_RX = re.compile(r"[-_. ]")
 _WORD = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
 _ALNUM = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
-SENSES = ("EXACT", "KEY", "TOKEN", "LOOSE", "SUB5", "SEPN", "CONCAT", "SUBALL")
+SENSES = ("EXACT", "KEY", "TOKEN", "LOOSE", "SUB5", "SEPN", "CONCAT", "SEP5B", "SUBALL")
 
 
 def base(s: str) -> str:
@@ -182,6 +195,12 @@ class Gate:
         self.set = frozenset(ms)
         self.normset = frozenset(norm(g) for g in ms)
         self.multi = {g: (norm(g), _SEPS_RX.sub("", g)) for g in ms if _SEPS_RX.search(g)}
+        # SEP5B, the R888 investigator's sense (r888_license_check/license_classes2.py respell): a multi-part member
+        # of length >= 5 with EACH internal separator written independently as . _ - space or nothing, with no
+        # [a-z0-9] neighbour - so a PARTIAL concatenation (aa_bbb_cc as aabbb-cc) is caught (verify N2)
+        self.sep5b = {g: re.compile(r"(?<![a-z0-9])" + r"[._\- ]?".join(
+            re.escape(x) for x in re.split(r"[._\- ]+", g) if x) + r"(?![a-z0-9])")
+            for g in self.multi if len(g) >= 5}
         pre = set()
         for g in ms:
             pre.add(_first_part(norm(g)) if g in self.multi else g)   # a leading separator never empties it (L6)
@@ -229,6 +248,9 @@ class Gate:
                         hit.add("SEPN")
                     if len(cg) >= 5 and _bounded(v, cg, _ALNUM):
                         hit.add("CONCAT")
+                    rx = self.sep5b.get(g)
+                    if rx is not None and rx.search(v):
+                        hit.add("SEP5B")
                     if ng in nv:
                         hit.add("SUBALL")                   # the normalised spelling as a plain substring
         return hit
@@ -281,6 +303,14 @@ def matcher_self_test(gate: Gate) -> bool:
         plants["SEPN"] = "zz " + _SEPS_RX.sub("-", g) + " zz"
         if len(_SEPS_RX.sub("", g)) >= 5:
             plants["CONCAT"] = "zz " + _SEPS_RX.sub("", g) + " zz"
+    three = sorted((x for x in gate.sep5b if len([p for p in re.split(r"[._\- ]+", x) if p]) >= 3),
+                   key=lambda x: (-len(x), x))
+    if three:                                   # a PARTIAL concatenation: the first separator dropped, the rest '-'
+        parts = [p for p in re.split(r"[._\- ]+", three[0]) if p]
+        plants["SEP5B"] = "zz " + parts[0] + parts[1] + "-" + "-".join(parts[2:]) + " zz"
+    elif g in gate.sep5b:
+        parts = [p for p in re.split(r"[._\- ]+", g) if p]
+        plants["SEP5B"] = "zz " + parts[0] + "." + "-".join(parts[1:]) + " zz"
     ok = True
     for sense, s in plants.items():
         good = sense in gate.cell(s)
@@ -498,7 +528,40 @@ def _flag_present() -> bool:
         return False
 
 
+PAUSE_MAX_MIN = 120                             # RELAUNCH_GUARD.ps1 ignores and removes an older .PAUSED
+
+
+def guard_jobs() -> list:
+    """[(name, script match)] of the guard's tracked jobs, read from the versioned workstation copy of
+    RELAUNCH_GUARD.ps1 in this checkout (comment lines skipped). Empty = cannot tell (the caller refuses)."""
+    try:
+        with open(os.path.join(ROOT, *GUARD_COPY.split("/")), encoding="utf-8-sig") as f:
+            text = "\n".join(ln for ln in f.read().splitlines() if not ln.lstrip().startswith("#"))
+    except OSError:
+        return []
+    return re.findall(r"@\{\s*n\s*=\s*'([^']+)'\s*;\s*match\s*=\s*'([^']+)'", text)
+
+
+def running_cmdlines():
+    """Command lines of every running python process (Windows; in memory only, never printed), or None when they
+    cannot be listed."""
+    if os.name != "nt":
+        return None
+    try:
+        r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                            "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                            "ForEach-Object { $_.CommandLine }"], capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.decode("utf-8", "replace").splitlines()
+
+
 def held_writers_problems() -> list:
+    """S4's state, not only S1's (verify N5): STOP_DISPATCH and local_heavy.DONE (S1), no heavy-pass or statcan
+    writer lock, a FRESH logs/<job>.PAUSED (younger than the guard's 120-minute limit) for every guard job that has
+    no logs/<job>.DONE, and no python process running any guard job's script."""
     logs = os.path.join(catalog_path.LIVE_STORE_ROOT, "logs")
     probs = []
     for name in ("STOP_DISPATCH", "local_heavy.DONE"):
@@ -507,6 +570,28 @@ def held_writers_problems() -> list:
     for name in ("local_heavy.lock", "statcan_writer.lock"):
         if os.path.lexists(os.path.join(logs, name)):
             probs.append(f"logs\\{name} is present (a writer is running)")
+    jobs = guard_jobs()
+    if not jobs:
+        probs.append("the guard's job list could not be read - S4's holds cannot be checked")
+    now = time.time()
+    for i, (n, _match) in enumerate(jobs, 1):
+        if os.path.exists(os.path.join(logs, f"{n}.DONE")):
+            continue
+        pf = os.path.join(logs, f"{n}.PAUSED")
+        try:
+            age = (now - os.stat(pf).st_mtime) / 60.0
+        except OSError:
+            probs.append(f"guard job {i}: its .PAUSED is absent (S4 holds every guard job)")   # names never printed
+            continue
+        if age >= PAUSE_MAX_MIN - 5:
+            probs.append(f"guard job {i}: its .PAUSED is {age:.0f} min old - the guard ignores it at "
+                         f"{PAUSE_MAX_MIN} (renew it)")
+    cmds = running_cmdlines()
+    if cmds is None and os.name == "nt":
+        probs.append("the running processes could not be listed - S4's receipt cannot be checked")
+    for i, (n, match) in enumerate(jobs, 1):
+        if cmds and any(match in c for c in cmds):
+            probs.append(f"guard job {i}: a process of it is running (S4 stops every crawler and the lane)")
     return probs
 
 
@@ -515,8 +600,19 @@ def header(path: str) -> bytes:
         return f.read(100)
 
 
-def resolve_target(db: str, live: bool) -> str:
-    """The real path of the database to open, or Refused. The rules are in the module docstring."""
+HOT_JOURNAL = ("HOT JOURNAL beside the database: a writer (or this tool's delete or VACUUM) died in the middle of a "
+               "transaction. DO NOT DELETE, MOVE OR COPY THE -journal FILE: it holds the original pages SQLite needs "
+               "to roll the file back, and without it the database is corrupt (a VACUUM's journal holds the whole "
+               "pre-VACUUM file). Recover it first, with the writers still held: "
+               "`python tools/selfhost/r888_licence_sweep.py --recover --live --db <the build>` - it takes "
+               "core.catalog_path.writer_lock(), whose _recover_hot_journal opens the build read-write so SQLite "
+               "rolls the journal back, then runs quick_check (for a proof copy: --recover --db <copy>, no --live). "
+               "Then re-run the step that died (verify N3)")
+
+
+def resolve_target(db: str, live: bool, allow_hot: bool = False) -> str:
+    """The real path of the database to open, or Refused. The rules are in the module docstring. `allow_hot` is
+    --recover's: a HOT rollback journal is then accepted (and only that sidecar)."""
     if not db:
         raise Refused("--db is required and must name a file")
     if db.startswith(("\\\\", "//")):
@@ -530,8 +626,16 @@ def resolve_target(db: str, live: bool) -> str:
         raise Refused("the file has more than one hard link - a shared copy; make a NEW full byte copy")
     for s in SIDE:
         if os.path.lexists(p + s):
-            raise Refused(f"a {s} file lies beside the database - refused (a leftover journal can hold rows, "
-                          "and a hot one means a writer died mid-transaction)")
+            if s == "-journal" and catalog_path.journal_is_hot(p + s):
+                if allow_hot:
+                    continue
+                raise Refused(HOT_JOURNAL)
+            if s == "-journal":
+                raise Refused("a NON-hot -journal lies beside the database (a PERSIST or TRUNCATE leftover): it may "
+                              "still hold old page images, i.e. rows. It is not needed for recovery, but do not "
+                              "delete or copy it on your own - ask the coordinator (R888, owner item 37)")
+            raise Refused(f"a {s} file lies beside the database - refused (this tool works on rollback-journal "
+                          "files only)")
     h = header(p)
     if len(h) < 100 or not h.startswith(b"SQLite format 3\x00"):
         raise Refused("not an SQLite 3 database file")
@@ -664,6 +768,8 @@ def write_backup(path: str, gate: Gate, cols, rows) -> None:
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "x", encoding="utf-8") as f:
         f.write(text)
+        f.flush()
+        os.fsync(f.fileno())                    # durable BEFORE the delete commits (verify N8)
 
 
 # ------------------------------------------------------------------------------------------------- licence state
@@ -737,12 +843,15 @@ def selection(con, gate: Gate, wide: Gate, with_code: bool = True, st=None) -> d
       del_mem   delete rows that carry a member of `wide`: deleted, never written to a file
       del_clean delete rows that carry none: written to the sealed backup before the delete
       sub_only  del_mem rows whose every hit is a plain substring (SUBALL only) - YES/NO (code review L9)
-      named_mem named rows that carry a member of `wide`: KEPT and reported for B34's code PR (K1N)
+      named_mem named rows that carry a member of TODAY's gate in a bounded sense (any sense but SUBALL): KEPT and
+                reported for B34's code PR (K1N). Not `wide` (verify N1): a former member that is hosted, served or
+                cleared today is named by live code of hosted sources, and K1N would read YES for ever
+      named_old named rows that carry only a former member, or today's only as a plain substring (INFO)
       held      v6: REFERENCED rows that carry a member of today's gate (licence rows hosted sources use)"""
     st = licence_state(con) if st is None else st
     li = st["cols"].index("license_id")
     unref = set(st["unref"])
-    wide_carry, gate_carry, sub_only = set(), set(), set()
+    wide_carry, gate_carry, gate_strong, sub_only = set(), set(), set(), set()
     for r in st["rows"]:
         texts = [v for v in r if isinstance(v, str)]
         hits = set().union(*(wide.cell(v) for v in texts)) if texts else set()
@@ -750,13 +859,17 @@ def selection(con, gate: Gate, wide: Gate, with_code: bool = True, st=None) -> d
             wide_carry.add(r[li])
             if hits == {"SUBALL"}:
                 sub_only.add(r[li])
-        if any(gate.cell(v) for v in texts):
+        ghits = set().union(*(gate.cell(v) for v in texts)) if texts else set()
+        if ghits:
             gate_carry.add(r[li])
+            if ghits - {"SUBALL"}:
+                gate_strong.add(r[li])
     named, head = (code_named(unref) if with_code else (set(), ""))
     delete = unref - named
     return {"st": st, "unref": unref, "named": named, "head": head, "delete": delete,
             "del_mem": delete & wide_carry, "del_clean": delete - wide_carry, "sub_only": delete & sub_only,
-            "named_mem": named & wide_carry, "held": gate_carry - unref}
+            "named_mem": named & gate_strong, "named_old": (named & wide_carry) - gate_strong,
+            "held": gate_carry - unref}
 
 
 def gates(con) -> tuple:
@@ -1052,6 +1165,41 @@ def residue_control(gate: Gate) -> bool:
     return a and not b
 
 
+def do_recover(p: str, live: bool) -> int:
+    """Roll a HOT rollback journal back (verify N3). The build (--live): writer_lock() is taken and its own
+    _recover_hot_journal opens the catalogue read-write, which makes SQLite roll the journal back - this tool only
+    checks that catalog_path's catalogue IS this file first. A proof copy: one read-write open and one read, the same
+    mechanism. Then: the journal is no longer hot, no -wal/-shm, and quick_check = ok. Prints PASS/FAIL only."""
+    t0 = time.time()
+    j = p + "-journal"
+    hot = catalog_path.journal_is_hot(j)
+    say(f"a HOT journal was beside the file: {yn(hot)}")
+    if live:
+        if not _samefile(catalog_path.catalog_path(), p):
+            raise Refused("core.catalog_path's catalogue is not this file - writer_lock() would recover another one")
+        with catalog_path.writer_lock():              # _recover_hot_journal runs on entry
+            pass
+    elif hot:
+        con = catalog_path.connect_path(p, write=True, timeout=30.0)
+        try:
+            con.execute("SELECT count(*) FROM sqlite_master").fetchone()   # the first read rolls the journal back
+        finally:
+            con.close()
+    still = catalog_path.journal_is_hot(j)
+    side = [s for s in ("-wal", "-shm") if os.path.lexists(p + s)]
+    con = connect_ro(p)
+    try:
+        qc = con.execute("PRAGMA quick_check").fetchall()
+    finally:
+        con.close()
+    say(f"recover wall time: {time.time() - t0:.1f} s")
+    return _receipt("RECOVER", [("no HOT journal beside the file now", not still),
+                                ("no -wal/-shm beside the file", not side),
+                                ("PRAGMA quick_check = ok", qc == [("ok",)])],
+                    info=[f"a -journal file still exists (a rolled-back journal is deleted in DELETE mode): "
+                          f"{yn(os.path.lexists(j))}"])
+
+
 def do_residue(p: str) -> int:
     t0 = time.time()
     _check_inputs()
@@ -1240,7 +1388,7 @@ def do_vacuum(p: str, live: bool, tmpdir: str, check: str, cache_mib: int = 0) -
 
 
 # ----------------------------------------------------------------------------------------------------------- --plan
-def do_plan(p: str, state: str) -> int:
+def do_plan(p: str, state: str, older: str = OLDER_COPY) -> int:
     t0 = time.time()
     _work_path(state, must_exist=False, what="--state")
     head = _check_inputs()
@@ -1253,10 +1401,11 @@ def do_plan(p: str, state: str) -> int:
         con.execute("COMMIT")
     finally:
         con.close()
+    nm = lambda x: x if not gate.cell(x) else "[name withheld]"            # noqa: E731 - verify N6
     if not matcher_self_test(gate):
         say("PLAN FAIL: the matcher self-test failed")
         return ERR
-    say(f"referencing columns: {', '.join(f'{t}.{c}' for t, c in s['st']['refs']) or '(none)'}")
+    say(f"referencing columns: {', '.join(nm(f'{t}.{c}') for t, c in s['st']['refs']) or '(none)'}")
     for k, b in why.items():
         say(f"keep set (R908 rule 2): {k if k.startswith('(') else 'a member is kept as ' + k}: {yn(b)}")
     say(f"the gate's git history was read (former members widen the backup test): YES")
@@ -1264,9 +1413,17 @@ def do_plan(p: str, state: str) -> int:
     say(f"   ... of them, carrying a member (deleted, never written to a file): {yn(bool(s['del_mem']))}")
     say(f"   ...... of those, matched only as a plain substring (no backup either): {yn(bool(s['sub_only']))}")
     say(f"   ... of them, carrying none (backed up, sealed, then deleted): {yn(bool(s['del_clean']))}")
-    say(f"unreferenced rows a tracked file names, carrying a member (KEPT; B34's code PR first): "
-        f"{yn(bool(s['named_mem']))}")
-    say(f"unreferenced rows a tracked file names, carrying none (KEPT): {yn(bool(s['named'] - s['named_mem']))}")
+    say(f"unreferenced rows a tracked file names, carrying a member of today's gate (K1N; KEPT; B34's code PR "
+        f"first): {yn(bool(s['named_mem']))}")
+    say(f"unreferenced rows a tracked file names, carrying only a former member or a plain-substring hit (KEPT, "
+        f"INFO): {yn(bool(s['named_old']))}")
+    say(f"unreferenced rows a tracked file names, carrying none (KEPT): "
+        f"{yn(bool(s['named'] - s['named_mem'] - s['named_old']))}")
+    li = s["st"]["cols"].index("license_id")
+    rows = {r[li]: r for r in s["st"]["rows"]}
+    older_miss = _older_copy_misses({k: rows[k] for k in s["del_mem"]}, older)
+    say(f"a member-carrying row to delete is absent from the older F: copy (no F: copy would hold it after the "
+        f"delete; it gets no backup): {'UNMEASURED' if older_miss is None else yn(older_miss)}")
     say(f"a reference names no licence row (dangling): {yn(s['st']['dangling'])}")
     say(f"free pages present: {yn(fl > 0)}")
     say(f"tracked files read at HEAD {head[:12]}")
@@ -1358,6 +1515,8 @@ def do_apply(p: str, live: bool, state: str, confirm: str, tmpdir: str, check: s
                 li = s["st"]["cols"].index("license_id")
                 rows = {r[li]: r for r in s["st"]["rows"]}
                 older_miss = _older_copy_misses({k: rows[k] for k in s["del_mem"]}, older)
+                say(f"before COMMIT: a member-carrying row to delete is absent from the older F: copy (it gets no "
+                    f"backup): {'UNMEASURED' if older_miss is None else yn(older_miss)}")      # verify N7
                 write_backup(backup, wide, s["st"]["cols"], [rows[k] for k in sorted(s["del_clean"])])
                 refd = s["st"]["exact"] & set(s["st"]["ids"])
                 for lid in s["delete"]:
@@ -1402,8 +1561,10 @@ def do_apply(p: str, live: bool, state: str, confirm: str, tmpdir: str, check: s
                 f"clears): {yn(res1['SIG_DEAD'])}",
                 f"a deleted member-carrying row is absent from the older F: copy (no F: copy holds it now): "
                 f"{'UNMEASURED' if older_miss is None else yn(older_miss)}",
-                f"unreferenced rows a tracked file names that carry a member (left for B34's code PR): "
-                f"{yn(bool(s0['named_mem']))}"]
+                f"unreferenced rows a tracked file names that carry a member of today's gate (K1N, left for "
+                f"B34's code PR): {yn(bool(s0['named_mem']))}",
+                f"unreferenced rows a tracked file names that carry only a former member or a plain-substring "
+                f"hit (kept): {yn(bool(s0['named_old']))}"]
         if not no_vacuum:
             checks += vacuum_core(p, td, check, cache_mib)
             t_r = time.time()
@@ -1601,6 +1762,7 @@ def do_sweep(p: str, workers: int, compare_state: str = "", allow_free: bool = F
     _lower_priority()
     _check_inputs()
     gate, carve = load_gate(), load_carveouts()
+    nm = lambda x: x if not gate.cell(x) else "[name withheld]"            # noqa: E731 - verify N6
     if not matcher_self_test(gate):
         say("SWEEP FAIL: the matcher self-test failed - no answer is trustworthy")
         return ERR
@@ -1659,8 +1821,12 @@ def do_sweep(p: str, workers: int, compare_state: str = "", allow_free: bool = F
                 meta[t]["range"] = (lo - 1, hi)
             else:
                 small.append((p, t, cols, roles, None, None, gate.ms, carve, hosted, None))
-        sm_hit = any(gate.cell(v) for r in con.execute("SELECT name, tbl_name, sql FROM sqlite_master")
-                     for v in r if isinstance(v, str))
+        sm_senses = set()
+        for r in con.execute("SELECT name, tbl_name, sql FROM sqlite_master"):
+            for v in r:
+                if isinstance(v, str):
+                    sm_senses |= gate.cell(v)
+        sm_strong, sm_sub = bool(sm_senses - {"SUBALL"}), sm_senses == {"SUBALL"}
         con.execute("COMMIT")
     finally:
         con.close()
@@ -1694,7 +1860,11 @@ def do_sweep(p: str, workers: int, compare_state: str = "", allow_free: bool = F
         d["nat"] = d.get("nat", False) or nat
     say(f"tables in sqlite_master: {len(tables)}; scanned here: {len(scan_tables) + 1}"
         + ("  (--licence-only: license, source, sqlite_master)" if licence_only else ""))
-    say(f"sqlite_master text carries a member: {yn(sm_hit)}")
+    say(f"-- sqlite_master  FAIL-class  a table/index/trigger name or its SQL carries a member in a bounded "
+        f"sense: {yn(sm_strong)}")
+    say(f"   sqlite_master  INFO        only as a plain substring (a short member inside a word): {yn(sm_sub)}")
+    if sm_strong:
+        fail.append("sqlite_master")                    # verify N6
     say("-- license (row count withheld: a before/after difference would be a count of rows removed)")
     say(f"   K1A FAIL-class  an unreferenced licence row that no tracked file names: {yn(k1a)}"
         + ("  (--apply deletes them)" if k1a else ""))
@@ -1722,18 +1892,18 @@ def do_sweep(p: str, workers: int, compare_state: str = "", allow_free: bool = F
     for t, _sql in scan_tables:
         m = meta.get(t, {})
         if m.get("virtual"):
-            say(f"-- {t}: fts5 virtual table - its text is scanned through {t}_content")
+            say(f"-- {nm(t)}: fts5 virtual table - its text is scanned through {nm(t + '_content')}")
             continue
         d = per.get(t, {"err": []})
         if d["err"] or not d.get("ranges"):
-            say(f"-- {t}: INCOMPLETE - a shard failed or none ran"
+            say(f"-- {nm(t)}: INCOMPLETE - a shard failed or none ran"
                 + (f" ({','.join(sorted(set(d['err'])))})" if d["err"] else ""))
-            fail.append(f"{t} incomplete")
+            fail.append(f"{nm(t)} incomplete")
             continue
         tc = [c for c in m.get("cols", []) if d.get("ntext", {}).get(c)]
         blobs = [c for c in m.get("cols", []) if d.get("nblob", {}).get(c)]
         if not tc:
-            say(f"-- {t}: UNMEASURED (no text cells{'; BLOB columns' if blobs else ''})")
+            say(f"-- {nm(t)}: UNMEASURED (no text cells{'; BLOB columns' if blobs else ''})")
             unmeasured.append(t)
             continue
         complete = not d.get("short", True)
@@ -1743,22 +1913,22 @@ def do_sweep(p: str, workers: int, compare_state: str = "", allow_free: bool = F
             complete &= bool(rs) and rs[0][0] == lo and rs[-1][1] == hi and all(
                 a[1] == b[0] for a, b in zip(rs, rs[1:])) and d.get("rows") == m["n"]
         ctl = _planted_control(gate, carve, m["cols"], m["roles"], m["first"]) if m.get("first") else None
-        say(f"-- {t}: {d.get('rows', 0):,} rows scanned, complete: {yn(complete)}")
+        say(f"-- {nm(t)}: {d.get('rows', 0):,} rows scanned, complete: {yn(complete)}")
         if not complete:
-            fail.append(f"{t} incomplete")
-            say(f"   {t}: INCOMPLETE - no NO may be read from this block")
+            fail.append(f"{nm(t)} incomplete")
+            say(f"   {nm(t)}: INCOMPLETE - no NO may be read from this block")
             continue
         anyhit = set().union(*d["flags"].values()) if d.get("flags") else set()
         say(f"   K4  HELD (v7)   mentions of a member: {yn(bool(anyhit))}"
             + ("   by sense: " + " ".join(s for s in SENSES if s in anyhit) if anyhit else ""))
         for c in tc:
             if d["flags"].get(c):
-                say(f"       column {c}: {','.join(s for s in SENSES if s in d['flags'][c])}")
+                say(f"       column {nm(c)}: {','.join(s for s in SENSES if s in d['flags'][c])}")
         empty = [c for c in m.get("cols", []) if c not in tc and c not in blobs]
         if empty:
-            say(f"   columns with no text cell (not read for text): {', '.join(empty)}")
+            say(f"   columns with no text cell (not read for text): {', '.join(nm(x) for x in empty)}")
         if blobs:
-            say(f"   BLOB columns not read (UNMEASURED): {', '.join(blobs)}")
+            say(f"   BLOB columns not read (UNMEASURED): {', '.join(nm(x) for x in blobs)}")
         if any(r for r in m["roles"].values()):
             say(f"   K2  FAIL-class  rows of a deny-listed source:            {yn(d.get('k2'))}")
             say(f"   K2C HELD        keys under a member that are carve-outs: {yn(d.get('k2c'))}")
@@ -1768,9 +1938,9 @@ def do_sweep(p: str, workers: int, compare_state: str = "", allow_free: bool = F
         say(f"   natural control (a hosted source id fires on a sample): {yn(d.get('nat'))}"
             + ("" if d.get("nat") else "  <- the planted control alone backs this table's answers"))
         if anyhit:
-            held.append(f"K4 {t}")
+            held.append(f"K4 {nm(t)}")
         if ctl is False:
-            fail.append(f"{t} control")
+            fail.append(f"{nm(t)} control")
     if k2_any:
         fail.append("K2")
     say(f"-- K5  {'INFO      ' if allow_free else 'FAIL-class'}  free pages present (freelist_count > 0): "
@@ -1781,7 +1951,7 @@ def do_sweep(p: str, workers: int, compare_state: str = "", allow_free: bool = F
     say(f"-- the file was unchanged during the sweep (identity + change counter): {yn(same)}")
     if not same:
         fail.append("file changed")
-    say(f"tables UNMEASURED: {len(unmeasured)}" + (f" ({', '.join(unmeasured)})" if unmeasured else ""))
+    say(f"tables UNMEASURED: {len(unmeasured)}" + (f" ({', '.join(nm(x) for x in unmeasured)})" if unmeasured else ""))
     say(f"HELD classes present (not a FAIL: v6, v7, K1N): {yn(bool(held))}")
     for text in NOT_COVERED:
         say(f"NOT COVERED  {text}")
@@ -1797,7 +1967,7 @@ def do_sweep(p: str, workers: int, compare_state: str = "", allow_free: bool = F
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     m = ap.add_mutually_exclusive_group(required=True)
-    for mode in ("--plan", "--apply", "--vacuum", "--sweep", "--residue"):
+    for mode in ("--plan", "--apply", "--vacuum", "--sweep", "--residue", "--recover"):
         m.add_argument(mode, action="store_true")
     ap.add_argument("--db", required=True)
     ap.add_argument("--live", action="store_true", help="the build itself, at the named steps S4d / S10b")
@@ -1814,13 +1984,13 @@ def main(argv=None) -> int:
     ap.add_argument("--licence-only", action="store_true", help="--sweep: license, source and sqlite_master only")
     ap.add_argument("--workers", type=int, default=8)
     a = ap.parse_args(argv)
-    mode = next(x for x in ("plan", "apply", "vacuum", "sweep", "residue") if getattr(a, x))
+    mode = next(x for x in ("plan", "apply", "vacuum", "sweep", "residue", "recover") if getattr(a, x))
     try:
-        p = resolve_target(a.db, a.live)
+        p = resolve_target(a.db, a.live, allow_hot=(mode == "recover"))
         say(f"B32 r888_licence_sweep  tool blob {tool_sha()[:12]}  mode {mode}{'  LIVE' if a.live else ''}  start "
             f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
         if mode == "plan":
-            return do_plan(p, a.state)
+            return do_plan(p, a.state, a.older_copy)
         if mode == "apply":
             return do_apply(p, a.live, a.state, a.confirm, a.tmpdir, a.check, a.backup, a.older_copy, a.no_vacuum,
                             a.cache_mib)
@@ -1828,6 +1998,8 @@ def main(argv=None) -> int:
             return do_vacuum(p, a.live, a.tmpdir, a.check, a.cache_mib)
         if mode == "sweep":
             return do_sweep(p, max(1, a.workers), a.compare_state, a.allow_free_pages, a.licence_only)
+        if mode == "recover":
+            return do_recover(p, a.live)
         return do_residue(p)
     except Refused as e:
         say(f"REFUSED: {e}")
