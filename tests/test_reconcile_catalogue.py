@@ -651,6 +651,15 @@ def test_t10_no_output_holds_a_gated_or_unhosted_row(env, capsys):
     assert hits == [], hits
     assert s["outside_the_allow_list_dropped"] == {rc.PRIMARY: "YES", rc.CLIMATE: "YES"}
     assert "gatedsrc" not in capsys.readouterr().out
+    # alpha:19 is D1-only and its title names the gate: the snapshot holds it redacted, and classify must neither
+    # list it nor carry the redaction marker into a result or a plan (M42/M43: the text grep alone is blind here,
+    # because the marker holds no gated text)
+    assert [k for (_t, k, _c) in rows(out) if k == "alpha:19"] == []
+    assert rows(out), "control: classify listed rows at all"
+    marker, _ = _grep_outputs([out], [rc.WITHHELD.decode("ascii")])
+    assert marker == [], marker
+    snap_marker, _ = _grep_outputs([tmp / "snap"], [rc.WITHHELD.decode("ascii")])
+    assert snap_marker, "positive control: the snapshot does hold the redaction marker"
 
 
 def test_t10_a_d1_only_hosted_row_is_listed_and_an_unhosted_source_is_only_a_yes(env):
@@ -837,7 +846,7 @@ def test_t13_probe_measures_one_page_and_projects_allowed_rows_only(env):
 
 # ---- T14: refusals (review M7: the F: volume, nothing under the E: repository, no stat of E:'s data) --------------
 
-def test_t14_refusals(env, monkeypatch):
+def test_t14_refusals(env, monkeypatch, capsys):
     tmp, fake = env
     fake.finish()
     local = make_local(tmp / "l.db", [srow("a:1")])
@@ -858,7 +867,11 @@ def test_t14_refusals(env, monkeypatch):
     assert rc.guard_input(str(tmp / "econ_live" / "blobs" / "index.db"), "--served-index")
     with pytest.raises(rc.Refused, match="must be on"):
         rc.guard_out(r"Z:\elsewhere" if os.name == "nt" else "/elsewhere")
+    capsys.readouterr()
     assert rc.main(["apply", "--out", str(tmp / "o"), "--plan", local, "--plan-sha", "x", "--fts-measure", local]) == 2
+    assert "apply runs only at S11" in capsys.readouterr().out    # refused for the FLAG, not by a later guard (M19)
+    with pytest.raises(rc.Refused, match="apply runs only at S11"):
+        rc.guard_catalogue(local, for_apply=True)                  # a named file is refused for apply too
     link = tmp / "linked.db"
     os.link(local, link)
     assert "hard links" in rc.plain_copy_problem(str(link))
@@ -936,6 +949,22 @@ def test_t15_t16_rehearse_writes_the_plan_rebuilds_fts_both_ways_and_verifies(en
     assert rec["verify"]["ok"] is True
     assert rc.main(["rehearse", "--out", str(tmp / "reh2"), "--catalogue", local, "--plan", str(out / "plan.json"),
                     "--plan-sha", sha]) == 2                       # the copy changed: the plan no longer fits
+
+
+def test_t15_verify_catches_a_stale_index_with_equal_counts(env, tmp_path):
+    """V5 counts alone pass a rebuild that did nothing when one row was added and one deleted (mutant M23 survived
+    that way); V5_content compares the index's text with series."""
+    local = make_local(tmp_path / "v.db", [srow("a:1", title="wages"), srow("a:2", title="prices")])
+    plan = {"writes": {"cells": [], "inserts": [], "deletes": []}, "digests": {"after": {}}}
+    con = cp.connect_path(local, write=True, isolation_level=None)
+    allow = rc.build_allow(con, set(), set())
+    assert "V5_content" not in rc.verify(con, plan, allow)["failed"]          # positive control: a fresh index
+    con.execute("UPDATE series SET title='rents' WHERE series_id='a:1'")      # stale now; the counts are equal
+    res = rc.verify(con, plan, allow)
+    assert "V5_content" in res["failed"] and "V5" not in res["failed"] and res["ok"] is False
+    rc.fts_rebuild(con, "rebuild_fts")
+    assert "V5_content" not in rc.verify(con, plan, allow)["failed"]
+    con.close()
 
 
 def test_t16_m2_the_drop_form_is_one_transaction_and_checks_its_ddl(env, tmp_path):

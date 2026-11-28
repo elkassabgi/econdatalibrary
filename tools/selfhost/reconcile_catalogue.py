@@ -2193,12 +2193,31 @@ def match_sets(con, queries: list[str]) -> dict:
             for q in queries}
 
 
+class FtsMultiset:
+    """An order-free digest of (series_id, title, geography) rows: the row count and the sum, mod 2**128, of each
+    row's 16-byte blake2b. Values are canonical: None stays None, bytes stay bytes, anything else is str()."""
+
+    def __init__(self):
+        self.n, self.acc = 0, 0
+
+    def add(self, *values) -> None:
+        canon = tuple(v if v is None or isinstance(v, bytes) else str(v) for v in values)
+        d = hashlib.blake2b(repr(canon).encode("utf-8", "surrogatepass"), digest_size=16).digest()
+        self.acc = (self.acc + int.from_bytes(d, "big")) % (1 << 128)
+        self.n += 1
+
+    def value(self) -> tuple[int, int]:
+        return self.n, self.acc
+
+
 def verify(con, plan: dict, allow: Allow) -> dict:
     """V1 every written cell equals its D1 value; V2 every inserted row is present and equal; V3 every deleted id is
     absent; V4 every bucket's row digest equals the plan's predicted after-digest (nothing else changed);
-    V5 count(series_fts) == count(series)."""
+    V5 count(series_fts) == count(series), and V5_content: the multiset of (series_id, title, geography) in
+    series_fts equals the one in series (FTS_INSERT's own projection) - one more scan of series_fts, no temp
+    space, so a rebuild that silently did nothing (equal counts, stale text) is caught."""
     w = plan["writes"]
-    bad = {"V1": [], "V2": [], "V3": [], "V4": [], "V5": []}
+    bad = {"V1": [], "V2": [], "V3": [], "V4": [], "V5": [], "V5_content": []}
     for t, key, col, kind, _before, after, _cls in w["cells"]:
         r = con.execute(f'SELECT "{col}" FROM "{t}" WHERE "{PK[t]}" = ?', (key,)).fetchone()
         if r is None or compare(kind, r[0], _unj(after)) == DIFF:
@@ -2215,17 +2234,27 @@ def verify(con, plan: dict, allow: Allow) -> dict:
             bad["V3"].append([t, key])
     dig = Digests()
     con.text_factory = _text_or_bytes
+    want_fts = FtsMultiset()
     for t in TABLES:
         cols = [r[1] for r in con.execute(f'PRAGMA table_info("{t}")')]
         for row in _local_iter(con, t, cols):
             dig.add(_bucket(t, row, allow), cols, row)
+            if t == "series":                                          # the same scan feeds V5's content side
+                want_fts.add(row.get("series_id"), row.get("title"), row.get("geography"))
     got, want = dig.result(), plan["digests"]["after"]
     bad["V4"] = sorted(k for k in set(got) | set(want) if got.get(k) != want.get(k))
     n_s = con.execute("SELECT COUNT(*) FROM series").fetchone()[0]
     n_f = con.execute("SELECT COUNT(*) FROM series_fts").fetchone()[0]
     if n_s != n_f:
         bad["V5"] = [n_s, n_f]
+    t_fts = time.monotonic()
+    got_fts = FtsMultiset()
+    for sid, title, geo in con.execute("SELECT series_id, title, geography FROM series_fts"):
+        got_fts.add(sid, title, geo)
+    if got_fts.value() != want_fts.value():                           # equal counts can still hide a stale index
+        bad["V5_content"] = ["series_fts (series_id, title, geography) differs from series"]
     return {"ok": not any(bad.values()), "failed": {k: len(v) for k, v in bad.items() if v},
+            "fts_content_check_s": round(time.monotonic() - t_fts, 1),
             "failed_buckets": [b for b in bad["V4"] if b != "_withheld"],
             "withheld_bucket_changed": "_withheld" in bad["V4"], "series": n_s, "series_fts": n_f, "utc": utcnow()}
 
