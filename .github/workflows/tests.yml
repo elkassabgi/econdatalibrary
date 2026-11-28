@@ -45,6 +45,15 @@ permissions:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    # A HANG IS STOPPED, AND SHOWS WHERE IT IS. The suite hung with no output and ran to GitHub's 6 h
+    # default on 2026-11-17 (run 44005351754) and 2026-11-27 (run 46057146010), both times in the same
+    # window: the last tests of test_selfhost_router.py and the first of test_selfhost_swap.py.
+    # Sized from the 40 green runs of 2026-11-23..27: this job took 29m00s to 44m37s (mean 36m09s), the
+    # pytest step 28m14s to 43m33s. 80 min on that step is 1.8x its longest green run; 90 min here (2.0x
+    # the longest job) is the backstop for every other step. The STEP limit is the one that should fire:
+    # a step that times out FAILS the job, while a job that times out is "cancelled" - the word every
+    # superseded run in this workflow also shows, so a hang would look like routine noise.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -65,8 +74,14 @@ jobs:
       # (a second copy of a list is a second thing to go stale).
       - name: Install
         run: pip install --quiet -r requirements-updater.txt pytest
+      # faulthandler_timeout is pytest's own option (no new dependency): when ONE test, with its setup and
+      # teardown, runs past 300 s, the stack of every thread goes into this log - it does not stop the test.
+      # No test took longer than 146 s in runs 44005351754, 46057146010 and the green 46050881135: the
+      # longest gap between two progress lines (72 tests a line) bounds every test in that line. So a
+      # green run prints no dump, and a hang is named after 5 min.
       - name: pytest
-        run: python -m pytest tests/ -q
+        timeout-minutes: 80
+        run: python -m pytest tests/ -q -o faulthandler_timeout=300
 
       # THE API CONTRACT SUITE, WHICH NOTHING RAN — the same artefact this file's header
       # describes, one directory over. `pytest tests/` does not collect api/, so the 18 tests
@@ -87,7 +102,7 @@ jobs:
       # a free port for every module, so when it breaks it should be attributable on sight
       # rather than mixed into the 2,667-test summary line.
       - name: pytest (api contract)
-        run: python -m pytest api/test_conformance.py -q
+        run: python -m pytest api/test_conformance.py -q -o faulthandler_timeout=300
 
       # THE BILLING GUARD'S OWN FAULT-INJECTION PROOF, WHICH ALSO RAN NOWHERE. Sweeping for
       # the api/ defect above turned up every test-shaped file in the repo: 224 under tests/
