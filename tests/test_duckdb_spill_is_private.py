@@ -38,10 +38,22 @@ TOOLS = [
     "tools/derive_usda_tables.py",
 ]
 SETTER = re.compile(r"SET temp_directory='\{([^}]+)\}'")
+# The literal name, not duck_spill.ENV_VAR: a renamed variable in the module must fail here.
+VAR = "ECONDL_DUCKDB_TMP"
 
 
 def _src(rel):
     return open(os.path.join(ROOT, rel.replace("/", os.sep)), encoding="utf-8").read()
+
+
+@pytest.fixture(autouse=True)
+def _no_spill_variable(monkeypatch):
+    """Every test here starts with ECONDL_DUCKDB_TMP unset. With it set, spill_root() ignores a
+    patched SPILL_ROOT, so a test that patches SPILL_ROOT would sweep the machine's folder instead.
+    The tests that want the variable set it themselves. The warned-values memory starts empty, so a
+    warning test does not depend on which test warned first."""
+    monkeypatch.delenv(VAR, raising=False)
+    monkeypatch.setattr(duck_spill, "_WARNED", set(), raising=False)
 
 
 @pytest.mark.parametrize("rel", TOOLS)
@@ -170,3 +182,205 @@ def test_sweep_is_skippable(tmp_path, monkeypatch):
     monkeypatch.setattr(duck_spill, "sweep_orphans", lambda *a, **k: calls.append(1) or (0, 0))
     duck_spill.ensure_spill("t", sweep=False)
     assert calls == []
+
+
+# --------------------------------------------------------------------------------------------- #
+# ECONDL_DUCKDB_TMP (T0 plan B30, review condition C-1). The variable's folder is shared: insee's
+# persistent staging, derive_csv's pid folders and the bounded-merge spill folders live there too.
+# So the spill goes to its OWN subfolder, and sweep_orphans must never list the variable's folder.
+# --------------------------------------------------------------------------------------------- #
+
+# stand-ins for what the other readers of the variable keep beside the spill:
+# _melodi_state.staging_dir, derive_csv._duck_spill_dir (pid<N>), merge._bounded_spill_dir
+SIBLINGS = ("insee_melodi_staging", "pid4242", "merge_pid4242_deadbeef")
+
+
+def _norm(p):
+    return os.path.normcase(os.path.normpath(str(p)))
+
+
+def _make_old(path, hours=100):
+    # not epoch 0: Windows rejects it for a directory (WinError 87). A real, old time works.
+    ts = time.time() - hours * 3600
+    os.utime(path, (ts, ts))
+
+
+def _plant_siblings(base):
+    """Each sibling is OLDER than the sweep guard, so only the root rule can save it, not the age."""
+    for name in SIBLINGS:
+        d = base / name
+        d.mkdir(parents=True)
+        (d / "keep.bin").write_bytes(b"k" * 32)
+        _make_old(d)
+
+
+def _assert_siblings_intact(base):
+    for name in SIBLINGS:
+        assert (base / name / "keep.bin").is_file(), (
+            f"{name} beside the spill was deleted; the spill root must be <ECONDL_DUCKDB_TMP>/_duckspill, "
+            f"never the variable's folder itself (C-1)")
+
+
+@pytest.fixture
+def default_root(tmp_path, monkeypatch):
+    """SPILL_ROOT -> tmp_path/default_root (not created), so a regression that falls back to the default
+    root writes and sweeps THERE - never in the checkout's logs/."""
+    d = tmp_path / "default_root"
+    monkeypatch.setattr(duck_spill, "SPILL_ROOT", str(d))
+    return d
+
+
+@pytest.fixture
+def env_base(tmp_path, monkeypatch, default_root):
+    """ECONDL_DUCKDB_TMP -> tmp_path/duckdb_tmp (absolute), with SPILL_ROOT redirected as above."""
+    base = tmp_path / "duckdb_tmp"
+    base.mkdir()
+    monkeypatch.setenv(VAR, str(base))
+    return base
+
+
+def test_default_root_is_unchanged_when_the_variable_is_unset(monkeypatch, capsys):
+    """No variable -> <repo>/logs/_duckspill, as before. An empty value counts as unset (the rule of the
+    other three readers: derive_csv, merge, _melodi_state), silently."""
+    default = os.path.join(ROOT, "logs", "_duckspill")
+    assert _norm(duck_spill.SPILL_ROOT) == _norm(default)
+    assert _norm(duck_spill.spill_root()) == _norm(default)
+    assert _norm(os.path.dirname(duck_spill.spill_path("t"))) == _norm(default)
+    monkeypatch.setenv(VAR, "")
+    assert _norm(duck_spill.spill_root()) == _norm(default)
+    assert _norm(os.path.dirname(duck_spill.spill_path("t"))) == _norm(default)
+    assert capsys.readouterr().err == "", "unset or empty must not warn"
+
+
+def test_variable_set_gives_its_own_subfolder_never_the_folder_itself(env_base, capsys):
+    capsys.readouterr()
+    root = duck_spill.spill_root()
+    assert capsys.readouterr().err == "", "an absolute value must not warn"
+    assert _norm(root) == _norm(env_base / "_duckspill")
+    assert _norm(root) != _norm(env_base), "the variable's folder itself is the C-1 defect"
+    p = duck_spill.spill_path("t")
+    assert _norm(os.path.dirname(p)) == _norm(env_base / "_duckspill")
+    assert "\\" not in p, "DuckDB wants posix slashes in temp_directory"
+    assert str(os.getpid()) in os.path.basename(p)
+
+
+def test_variable_is_read_at_use_time_not_at_import(tmp_path, monkeypatch):
+    """The module was imported before this test set anything. Each call must see the current value."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    monkeypatch.setenv(VAR, str(a))
+    assert _norm(duck_spill.spill_root()) == _norm(a / "_duckspill")
+    monkeypatch.setenv(VAR, str(b))
+    assert _norm(duck_spill.spill_root()) == _norm(b / "_duckspill")
+    monkeypatch.delenv(VAR)
+    assert _norm(duck_spill.spill_root()) == _norm(duck_spill.SPILL_ROOT)
+
+
+def test_sweep_orphans_leaves_old_siblings_of_the_subfolder_in_place(env_base, tmp_path):
+    _plant_siblings(env_base)
+    orphan = env_base / "_duckspill" / "killed_999_dead"
+    orphan.mkdir(parents=True)
+    (orphan / "duckdb_temp_storage_DEFAULT-0.tmp").write_bytes(b"x" * 64)
+    _make_old(orphan)
+    removed, freed = duck_spill.sweep_orphans(older_than_hours=24)
+    # positive control: the sweep DID run in the subfolder, so "the siblings survived" is not vacuous
+    assert (removed, freed) == (1, 64)
+    assert not orphan.exists()
+    assert (env_base / "_duckspill").is_dir()
+    _assert_siblings_intact(env_base)
+    assert not (tmp_path / "default_root").exists()
+
+
+def test_ensure_spill_with_the_variable_reaps_only_inside_the_subfolder(env_base, tmp_path, monkeypatch):
+    """ensure_spill sweeps on its first call in a process (audit_store_vs_catalog, catalog_census_tables,
+    catalog_usda_tables, derive_usda_tables). That sweep is the C-1 risk."""
+    _plant_siblings(env_base)
+    orphan = env_base / "_duckspill" / "killed_999_dead"
+    orphan.mkdir(parents=True)
+    _make_old(orphan)
+    monkeypatch.setattr(duck_spill, "_SWEPT", False)
+    p = duck_spill.ensure_spill("t")
+    assert os.path.isdir(p)
+    assert _norm(os.path.dirname(p)) == _norm(env_base / "_duckspill")
+    assert not orphan.exists(), "positive control: the first ensure_spill must reap the old orphan"
+    _assert_siblings_intact(env_base)
+    assert not (tmp_path / "default_root").exists()
+
+
+def test_connection_spill_with_the_variable_creates_and_removes_only_its_own_folder(env_base, tmp_path):
+    _plant_siblings(env_base)
+    live = env_base / "_duckspill" / "other_run_1_aaaa"          # a sibling run's spill, in use now
+    live.mkdir(parents=True)
+    (live / "duckdb_temp_storage_DEFAULT-0.tmp").write_bytes(b"x" * 8)
+    base_before = sorted(os.listdir(env_base))
+    with duck_spill.connection_spill("t") as p:
+        assert _norm(os.path.dirname(p)) == _norm(env_base / "_duckspill")
+        assert os.path.isdir(p)
+        assert sorted(os.listdir(env_base / "_duckspill")) == sorted(["other_run_1_aaaa", os.path.basename(p)])
+        with open(os.path.join(p, "duckdb_temp_storage_DEFAULT-0.tmp"), "wb") as fh:
+            fh.write(b"y" * 8)
+    assert not os.path.exists(p)
+    assert os.listdir(env_base / "_duckspill") == ["other_run_1_aaaa"]
+    assert (live / "duckdb_temp_storage_DEFAULT-0.tmp").is_file()
+    assert sorted(os.listdir(env_base)) == base_before
+    _assert_siblings_intact(env_base)
+    assert not (tmp_path / "default_root").exists()
+
+
+def test_connection_spill_in_an_empty_variable_folder_adds_only_the_subfolder(env_base, tmp_path):
+    with duck_spill.connection_spill("t") as p:
+        assert _norm(os.path.dirname(p)) == _norm(env_base / "_duckspill")
+    assert not os.path.exists(p)
+    assert os.listdir(env_base) == ["_duckspill"]
+    assert os.listdir(env_base / "_duckspill") == []
+    assert not (tmp_path / "default_root").exists()
+
+
+def test_with_the_variable_set_an_old_orphan_in_the_default_root_survives(env_base, default_root, monkeypatch):
+    """The tests above catch CREATION in the default root, not DELETION in it (review of PR #342, mutant R3).
+    With the variable set, neither sweep_orphans nor ensure_spill may reap <repo>/logs/_duckspill - on E:
+    that folder belongs to the runs without the variable (mirror_sync and the tools that hard-code it)."""
+    kept = default_root / "killed_1_other"
+    kept.mkdir(parents=True)
+    (kept / "duckdb_temp_storage_DEFAULT-0.tmp").write_bytes(b"d" * 16)
+    _make_old(kept)
+    orphan = env_base / "_duckspill" / "killed_999_dead"
+    orphan.mkdir(parents=True)
+    (orphan / "duckdb_temp_storage_DEFAULT-0.tmp").write_bytes(b"x" * 64)
+    _make_old(orphan)
+    removed, freed = duck_spill.sweep_orphans(older_than_hours=24)
+    assert (removed, freed) == (1, 64), "positive control: the old orphan in the subfolder must be reaped"
+    assert not orphan.exists()
+    assert (kept / "duckdb_temp_storage_DEFAULT-0.tmp").is_file(), (
+        "sweep_orphans reaped the DEFAULT root while ECONDL_DUCKDB_TMP was set")
+    monkeypatch.setattr(duck_spill, "_SWEPT", False)
+    duck_spill.ensure_spill("t")
+    assert (kept / "duckdb_temp_storage_DEFAULT-0.tmp").is_file(), (
+        "ensure_spill's sweep reaped the DEFAULT root while ECONDL_DUCKDB_TMP was set")
+    assert os.listdir(default_root) == ["killed_1_other"], "nothing new may be made in the default root"
+
+
+@pytest.mark.parametrize("value", ["relspill", "F:", " "])
+def test_a_non_absolute_variable_is_ignored_with_one_warning_line(value, default_root, tmp_path, monkeypatch,
+                                                                    capsys):
+    """A relative value (`relspill`), a bare drive (`F:`, drive-relative on Windows) or a blank resolves
+    against the cwd - the E: checkout for the T0 runs. It counts as unset: the spill goes to the default
+    root, as before the variable was read, and ONE warning line goes to stderr (once per value per
+    process, so a long run does not repeat it). It does not raise."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv(VAR, value)
+    capsys.readouterr()
+    assert _norm(duck_spill.spill_root()) == _norm(default_root)
+    assert _norm(duck_spill.spill_root()) == _norm(default_root)
+    assert _norm(os.path.dirname(duck_spill.spill_path("t"))) == _norm(default_root)
+    if value == "relspill":          # the one value that is safe to create relative to the tmp cwd
+        with duck_spill.connection_spill("t") as p:
+            assert _norm(os.path.dirname(p)) == _norm(default_root)
+        assert not os.path.exists(p)
+    out = capsys.readouterr()
+    lines = out.err.splitlines()
+    assert len(lines) == 1, f"expected ONE warning line on stderr, got {lines!r}"
+    assert VAR in lines[0] and repr(value) in lines[0] and "not an absolute path" in lines[0]
+    assert out.out == "", "the warning goes to stderr; a tool's stdout can carry its JSON"
+    assert os.listdir(cwd) == [], "a non-absolute value must not spill under the cwd"
