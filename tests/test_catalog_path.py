@@ -349,13 +349,14 @@ def test_the_resolver_has_no_override():
     code = "\n".join(l for l in code.splitlines() if not l.lstrip().startswith("#"))
     for banned in ("environ", "getenv", "argv"):
         assert banned not in code, f"core/catalog_path.py reads {banned!r}: the paths must not be overridable"
-    # the DEFAULTS, read from the source: tests/conftest.py points LOCK_PATH, BUILD_PATH and CHECKOUT_PATH at
-    # temporary paths for every test (R1227/R1230), so the live attributes are not the defaults here
+    # the DEFAULTS, read from the source: tests/conftest.py points LOCK_PATH, BUILD_PATH, CHECKOUT_PATH and (since
+    # B24's review M7) LIVE_STATE_DIR at temporary paths for every test (R1227/R1230), so the live attributes are
+    # not the defaults here
     assert 'LIVE_STORE_ROOT = r"E:\\research\\econfindatalibrary"' in src
     assert 'LOCK_PATH = r"E:\\econ_live\\state\\writer.lock"' in src
     assert cp.LIVE_STORE_ROOT == r"E:\research\econfindatalibrary"
     assert 'BUILD_PATH = os.path.join(LIVE_STORE_ROOT, "data", "catalog.db")' in src, "the production checkout IS the build"
-    assert cp.LIVE_STATE_DIR == os.path.join(cp.LIVE_STORE_ROOT, "data", "_aqueduct")
+    assert 'LIVE_STATE_DIR = os.path.join(LIVE_STORE_ROOT, "data", "_aqueduct")' in src
 
 
 # ---- the ratchet: files that name catalog.db outside the resolver may only become fewer ---------------

@@ -1,0 +1,7 @@
+# C7(c), the hand list (T0 plan (b2) C7 (c)). grain: id (one series row) or source (every row of the source).
+# The sec_edgar CIK metadata cells D1 never had (R1919) come from S5's Road B receipt, entered as a run in the
+# reviewed run list (writer tools/sync_source_rows_d1_to_local.py, parser sync_rows), not here.
+key	grain	reason	evidence
+insee_melodi:DS_RP_MENAGES_PRINC	id	start_date 2012-12-31 set locally, on the FIRST-D1-SYNC list	F:/work/insee_f1b/OPERATOR.md:208-212
+statcan	source	the 415,015 frequency fixes, local only ("D1: frozen"); redundant with C2	E: logs/statcan_freq_fix/2026-10-18T072348Z_62540/receipt.json; F:/work/statcan_freq/OPERATOR.md step 7
+statcan	source	the statcan rows never sent to D1; redundant with C2 and C4	F:/work/econ_finish/FINISH_PLAN.md:17

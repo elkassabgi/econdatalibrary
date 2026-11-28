@@ -225,6 +225,9 @@ def _no_production_paths(tmp_path_factory):
             # on this workstation shares. A test that took it would pace production, or be paced by it.
             mp.setattr(_istat_pacer, "STATE_DIR", str(own / "istat_pacer"))
         mp.setattr(catalog_path, "LOCK_PATH", str(own / "state" / "writer.lock"))
+        # the live state folder (E:'s data/_aqueduct): core/licence_targets.py appends its removal log there, and a
+        # tool's pre-T0 refusal compares paths with it - no test may reach the real one (B24 review M7, R1940)
+        mp.setattr(catalog_path, "LIVE_STATE_DIR", str(own / "live" / "data" / "_aqueduct"))
         mp.setattr(cutover, "FLAG_PATH", str(own / "CUTOVER"))
         mp.setattr(catalog_path, "BUILD_PATH", str(own / "live" / "data" / "catalog.db"))
         mp.setattr(catalog_path, "CHECKOUT_PATH", str(own / "checkout" / "data" / "catalog.db"))

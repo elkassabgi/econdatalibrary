@@ -50,6 +50,9 @@ ARGS = {
     "tools/delist_timeless_tables.py": {"write": ["--apply"], "dry": []},
     "tools/apply_series_names.py": {"write": ["--apply"], "dry": ["--measure"]},
     "tools/refresh_flowgrain_dates.py": {"write": ["--source", "zz", "--apply"], "dry": ["--source", "zz", "--dry-run"]},
+    "tools/selfhost/reconcile_catalogue.py": {"write": ["apply", "--out", "o", "--plan", "p", "--plan-sha", "s",
+                                                        "--fts-measure", "m"],
+                                              "dry": ["classify", "--out", "o", "--snapshot-dir", "d"]},
 }
 
 
@@ -153,6 +156,7 @@ EXPECTED_WRITERS = {
     "tools/delist_timeless_tables.py",                                             # joined 2026-11-17 (t0_ready)
     "core/backfill_coverage.py", "pipeline/title_bea.py", "tools/apply_series_names.py",
     "tools/refresh_flowgrain_dates.py",                                            # joined 2026-11-17 (t0_ready)
+    "tools/selfhost/reconcile_catalogue.py",                                       # joined 2026-11-28 (T0 B24)
 }
 
 # Writers whose entry must NOT hold the lock for the whole run, each with the premise that makes it safe pinned
