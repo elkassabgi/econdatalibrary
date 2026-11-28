@@ -1620,6 +1620,8 @@ _LIVE_SPELLINGS = [
     "\\\\localhost\\E$\\research\\econfindatalibrary\\data\\catalog.db",
     "\\\\?\\UNC\\localhost\\E$\\econ_live\\state\\writer.lock",
     "\\\\?\\Volume{00000000-0000-0000-0000-000000000000}\\econ_live",
+    "\\??\\E:\\econ_live\\state\\writer.lock",                # the NT namespace: CreateFileW opens it as E:\...
+    "\\??\\UNC\\localhost\\E$\\econ_live\\state\\writer.lock",
     "E:\\ECON_L~1\\state\\writer.lock",
     "E:\\RESEAR~1\\ECONFI~1\\data\\catalog.db",
 ] + (["E:\\econ_live.\\state\\writer.lock", "E:\\econ_live.", "//127.0.0.1/e$/econ_live/state/writer.lock"]
@@ -1630,16 +1632,17 @@ _LIVE_BY_HAND = ("e:\\research\\econfindatalibrary\\data", "e:\\econ_live")   # 
 
 def _is_live(s) -> bool:
     """A path that names a live place, or may: folded BY HAND here, not by the code under test. Under a live root (or
-    a stream of one), through an admin share or \\\\?\\UNC form of the live drive, or an 8.3 short name on E:. Only
-    these are blocked, so a run whose tmp folder or checkout is on E: still works (review note LOW-4)."""
+    a stream of one), through an admin share or a \\\\?\\UNC or \\??\\UNC form of the live drive, or an 8.3 short
+    name on E:. Only these are blocked, so a run from a checkout on E: still works (review note LOW-4); the a~1
+    control below needs a tmp folder off the live drive and is skipped otherwise."""
     import ntpath
     s = s.decode(errors="replace") if isinstance(s, bytes) else str(s)
     if s.lower().startswith("file:"):                         # a sqlite URI: file:///E:/...?mode=ro
         s = s[5:].split("?", 1)[0].lstrip("/")
     s = s.replace("/", "\\").lower()
-    if s.startswith("\\\\?\\unc\\"):
+    if s.startswith("\\\\?\\unc\\") or s.startswith("\\??\\unc\\"):
         s = "\\\\" + s[8:]
-    elif s[:4] in ("\\\\?\\", "\\\\.\\"):
+    elif s[:4] in ("\\\\?\\", "\\\\.\\", "\\??\\"):
         s = s[4:]
     m = re.match(r"^\\\\[^\\]+\\([a-z])\$(\\.*)?$", s)        # \\host\E$\x -> e:\x
     if m:
@@ -1704,7 +1707,8 @@ def test_G3_note_a_live_path_is_refused_on_its_text_and_never_stat_ed_opened_or_
     assert [p for p, w in why.items() if not w] == [], why
     assert seen == [], seen                                  # nothing at all was stat-ed, opened or resolved
     assert "network or device path" in why[_UNC_SPELLING], why
-    assert "short (8.3) name" in why["E:\\ECON_L~1\\state\\writer.lock"], why
+    assert "8.3-style component" in why["E:\\ECON_L~1\\state\\writer.lock"], why
+    assert "is under E:\\econ_live" in why["\\??\\E:\\econ_live\\state\\writer.lock"], why
     # through the tool's entry point: each input in turn given as a live path, the others real copies
     good = {"--state": str(d / "state.json"), "--catalogue": str(d / "cat.sqlite"), "--store-dir": str(d / "store")}
     for flag in good:
@@ -1716,10 +1720,12 @@ def test_G3_note_a_live_path_is_refused_on_its_text_and_never_stat_ed_opened_or_
     # the controls. The spies record: a copy that passes the text test IS resolved, and the census reads it
     assert LC.refused(str(d / "state.json")) is None
     assert ("realpath", str(d / "state.json")) in seen, seen
-    assert LC.refused(str(tmp_path / "a~1" / "state.json")) is None, "a tilde off the live drive is a plain name"
+    if not str(tmp_path).lower().startswith("e:"):
+        assert LC.refused(str(tmp_path / "a~1" / "state.json")) is None, "a tilde off the live drive is a plain name"
     # a device prefix in front of a local copy is dropped, not refused as a device path
-    pre = "\\\\?\\" + str(d / "state.json") if os.name == "nt" else "\\\\?\\F:\\copies\\state.json"
-    assert LC.refused(pre) is None, pre
+    for dev in ("\\\\?\\", "\\??\\"):
+        pre = dev + str(d / "state.json") if os.name == "nt" else dev + "F:\\copies\\state.json"
+        assert LC.refused(pre) is None, pre
     assert LC.main(_census_args(d)) == 1 and "LOST 11111111" in capsys.readouterr().out
     # ... and a link into a refused place is still refused, by the resolve step
     live, link = tmp_path / "live", tmp_path / "link"
@@ -1735,6 +1741,18 @@ def test_G3_note_a_live_path_is_refused_on_its_text_and_never_stat_ed_opened_or_
     why = LC.refused(str(link / "catalog.db"), roots=(str(live),))
     assert why and "resolves to" in why, why
     assert LC.refused(str(tmp_path / "livex" / "catalog.db"), roots=(str(live),)) is None, "a near-miss name"
+
+
+def test_G3_note_a_path_that_resolves_to_a_network_path_is_refused(tmp_path, monkeypatch):
+    """A mapped drive passes the text test and resolves to a UNC path, which may be the live drive's share. realpath is
+    faked for one local path (no mapped drive is needed, and nothing on the network is reached)."""
+    real = os.path.realpath
+    mapped = str(tmp_path / "mapped" / "state.json")
+    monkeypatch.setattr(os.path, "realpath",
+                        lambda p, *a, **k: "\\\\server\\share\\state.json" if os.fspath(p) == mapped else real(p, *a, **k))
+    why = LC.refused(mapped)
+    assert why and "resolves to \\\\server\\share\\state.json, a network or device path" in why, why
+    assert LC.refused(str(tmp_path / "local" / "state.json")) is None, "the control: a local path is not refused"
 
 
 def test_G3_the_census_pins_its_live_places_and_id_scheme_to_the_code_it_mirrors():

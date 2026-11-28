@@ -55,27 +55,33 @@ _DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
 _SHORT_NAME = re.compile(r"~\d")                            # an 8.3 component, e.g. ECON_L~1
 
 
+_DEVICE_PREFIXES = ("\\\\?\\", "\\\\.\\", "\\??\\")      # \\?\  \\.\  and the NT-namespace \??\
+
+
 def _fold_prefix(s: str) -> str:
-    r"""Drop a \\?\ or \\.\ device prefix (either slash, mixed too) in front of a drive path."""
-    if s[:4].replace("/", "\\") in ("\\\\?\\", "\\\\.\\") and _DRIVE.match(s[4:]):
+    r"""Drop a \\?\, \\.\ or \??\ device prefix (either slash, mixed too) in front of a drive path. \??\ matters:
+    GetFullPathNameW reads it as a rooted path on the working drive, but CreateFileW opens it as the NT path."""
+    if s[:4].replace("/", "\\") in _DEVICE_PREFIXES and _DRIVE.match(s[4:]):
         return s[4:]
     return s
 
 
 def _is_network_or_device(s: str) -> bool:
-    r"""A UNC path (\\host\share, \\localhost\E$), \\?\UNC\..., \\?\Volume{...} or any other device path: on Windows
-    every path that starts with two slashes once a drive prefix is dropped; on another OS one spelled with
-    backslashes. Decided on the text: such a path can name a live place in a way no text test can rule out."""
+    r"""A UNC path (\\host\share, \\localhost\E$), \\?\UNC\..., \\?\Volume{...}, \??\... or any other device path:
+    on Windows every path that starts with two slashes or with \??\ once a drive prefix is dropped; on another OS
+    one spelled so with backslashes. Decided on the text: such a path can name a live place in a way no text test
+    can rule out."""
     s = _fold_prefix(s)
-    return s.replace("/", "\\").startswith("\\\\") if os.name == "nt" else s.startswith("\\\\")
+    b = s.replace("/", "\\") if os.name == "nt" else s
+    return b.startswith("\\\\") or b.startswith("\\??\\")
 
 
 def _text_form(path) -> str:
     r"""`path` as normalised TEXT: never stat-ed, opened or resolved (code re-review round 3, the G3 note). A Windows
     path (on Windows every path; on another OS one spelled with a drive letter) is folded with ntpath: either slash,
-    any case, `..` collapsed, a \\?\ or \\.\ prefix dropped - the same on CI's Linux runner as on the desktop for
-    these spellings. On Windows only, abspath (GetFullPathNameW: text only, it reads no file) also joins the working
-    folder and drops trailing dots and spaces from the components."""
+    any case, `..` collapsed, a device prefix dropped - the same on CI's Linux runner as on the desktop for these
+    spellings. On Windows only, abspath (GetFullPathNameW: text only, it reads no file) also joins the working
+    folder and drops trailing dots from the components (a trailing space inside the path is kept: another name)."""
     s = _fold_prefix(os.fspath(path))
     if os.name == "nt":
         return ntpath.normcase(ntpath.normpath(ntpath.abspath(s)))
@@ -109,8 +115,8 @@ def refused(path: str, roots=None) -> "str | None":
     network or device path, and an 8.3 short name on a root's drive are refused there. Only a path that passes is
     resolved (os.path.realpath, which touches it), so a junction, link or subst drive into a live place is still
     refused, and so is one that resolves to a network path (a mapped drive). The roots are compared as text and
-    never resolved: if a root were itself a junction, a path spelled by its target would not be refused (both are
-    plain folders, no reparse point, checked 2026-11-28)."""
+    never resolved: if a root were itself a junction, a path spelled by its target would not be refused. A hard
+    link elsewhere to a live file is not detected at all."""
     roots = REFUSED_ROOTS if roots is None else roots
     forms = [(r, _text_form(r)) for r in roots]
     s = os.fspath(path)
@@ -120,8 +126,10 @@ def refused(path: str, roots=None) -> "str | None":
     for r, rf in forms:
         if _under(p, rf):
             return f"REFUSED: {path} is under {r}, a LIVE place (R1940) - give a COPY"
+    for r, rf in forms:
         if _short_name_on(p, rf):
-            return f"REFUSED: {path} has a short (8.3) name on the drive of {r}, a LIVE place - give the long path"
+            return (f"REFUSED: {path} has an 8.3-style component (~<digit>) on the drive of {r}, a LIVE place - "
+                    f"give the long path")
     real = os.path.realpath(path)            # passed the text test: resolved only now
     if _is_network_or_device(real):
         return f"REFUSED: {path} resolves to {real}, a network or device path - give a COPY on a local drive"
