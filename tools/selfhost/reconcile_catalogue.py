@@ -30,8 +30,8 @@ gated id. Anything else is dropped ON RECEIPT, before validation or storage, and
 never a name, a key or a count (R888). Messages print a key's sha256 prefix, never the key.
 A HOSTED KEY IS NOT A MENTION (coordinator ruling on code-review H2, 2026-11-28): the gated-token rule never
 applies to the key columns of an admitted row (series.series_id / series.source_id, source.source_id); it applies
-to non-key text cells, whose values are replaced in the snapshot by a keyed digest (WITHHELD + HMAC), so equal
-values still compare equal and no gated text is stored.
+to non-key text cells. Such a cell is compared with the local row AT RECEIPT (compare(), normalisation kept) and
+stored as a marker plus one equal/differs byte - no text, no digest, no salt (code-review round 2, C1 ruling).
 
 CLASSES (b2), first match wins:
   cells: LIC-HELD (any licence / redistributability cell: never applied in either direction, listed with its
@@ -66,7 +66,6 @@ import argparse
 import datetime as dt
 import decimal
 import hashlib
-import hmac
 import json
 import math
 import ntpath
@@ -123,8 +122,8 @@ JS_SAFE_INT = 2 ** 53                                   # the D1 answer is JSON 
 # network error) retries THE SAME page after these pauses; anything else stops the read. The error's text is
 # matched, never printed (it may echo a key).
 RETRY_SLEEPS = (1.0, 4.0, 15.0)
-_SIZE_ERROR_RX = re.compile(r"HTTP 413\b|too large|too big|toobig|exceed|response size|payload", re.I)
-_TRANSIENT_RX = re.compile(r"HTTP (429|5\d\d)\b")
+_HTTP_STATUS_RX = re.compile(r"\bHTTP (\d{3})\b")
+_SIZE_ERROR_RX = re.compile(r"too large|too big|toobig|exceed|response size|payload", re.I)
 # Stored snapshot rows vs D1's own source_counts over the allowed sources (code-review M1): a shortfall above this
 # FAILS classify. source_counts drifts (R489: e.g. 23 rows on sec_edgar, a 1,157-row phantom), so the tolerance is
 # max(10,000 rows, 0.1 %) - far below what a truncated read loses, far above the drift seen.
@@ -159,10 +158,13 @@ SEARCH_SQL = ("SELECT f.series_id AS series_id, f.title AS fts_title, f.geograph
               " s.geography AS series_geo FROM series_fts f JOIN series s ON s.series_id = f.series_id"
               " WHERE series_fts MATCH ?")
 
-# Stands in, in a snapshot, for a non-key value naming a gated id: the marker + HMAC-SHA256(salt, value), the salt
-# a random per-snapshot key in its _state. No gated text is stored, and an EQUAL local value still compares equal
-# (a hosted sec_edgar title that holds a gated token must not read as a V7 difference).
+# Stands in, in a snapshot, for a non-key value naming a gated id. EQUALITY IS DECIDED AT RECEIPT (code-review round
+# 2, C1, coordinator ruling): read-d1 reads the local row by primary key and runs compare() - the normalisation rules
+# kept - and stores only the marker plus ONE byte, '=' (equal) or '!' (differs). No salt, no digest, nothing derived
+# from the text is stored; the snapshot is bound to the catalogue it was decided against (catalogue_sha256).
 WITHHELD = b"\x00withheld-by-the-allow-list\x00"
+WITHHELD_EQUAL = WITHHELD + b"="
+WITHHELD_DIFFERS = WITHHELD + b"!"
 RAW, NORM, DIFF = "raw", "norm", "diff"
 LOCAL, TAKE_D1, VERIFY, HELD = "local", "d1", "verify", "held"
 CELL_CLASSES = ("LIC-HELD", "ROUNDTRIP", "C7", "C5", "C2", "C6", "C1", "C1-GAP", "LOCAL-NULL", "DEFAULT")
@@ -253,29 +255,9 @@ def _is_withheld(v) -> bool:
     return isinstance(v, (bytes, bytearray)) and bytes(v).startswith(WITHHELD)
 
 
-def _value_bytes(v) -> bytes | None:
-    if v is None:
-        return None
-    if isinstance(v, (bytes, bytearray)):
-        return bytes(v)
-    if isinstance(v, str):
-        return v.encode("utf-8", "surrogatepass")
-    return str(v).encode("utf-8")
-
-
-def withheld_value(salt_hex: str | None, v) -> bytes:
-    """The stored stand-in for a value naming a gated id. Without a salt the digest is all zeros (never equal)."""
-    b = _value_bytes(v)
-    if not salt_hex or b is None:
-        return WITHHELD + bytes(32)
-    return WITHHELD + hmac.new(bytes.fromhex(salt_hex), b, hashlib.sha256).digest()
-
-
-def withheld_equal(salt_hex: str | None, marker, local_value) -> bool:
-    """Does the local value equal the D1 value the marker stands in for (byte for byte)?"""
-    if not salt_hex or local_value is None or not _is_withheld(marker):
-        return False
-    return hmac.compare_digest(bytes(marker), withheld_value(salt_hex, local_value))
+def _withheld_is_equal(v) -> bool:
+    """The receipt-time verdict a withheld stand-in carries: True only for WITHHELD_EQUAL."""
+    return isinstance(v, (bytes, bytearray)) and bytes(v) == WITHHELD_EQUAL
 
 
 # ---- path guards (review M7: string tests for E:, a volume test for F:, never a stat of E:'s data/) --------
@@ -357,7 +339,10 @@ def guard_input(path, what: str, *, own_list: bool = False):
     the served index, which only --served-index may name."""
     if path is None:
         return None
-    if own_list and _is_under(path, LISTS_DIR) and (cutover.is_cut_over() or (not _under_e_repo(path) and _on_f(path))):
+    # the E: STRING test comes before anything that resolves a path (round 2 L6): before T0 an E: path is never
+    # realpath-ed or stat-ed; after T0 the tool's own lists live in the E: checkout and are allowed
+    if own_list and (cutover.is_cut_over() or not _under_e_repo(path)) and _is_under(path, LISTS_DIR) \
+            and (cutover.is_cut_over() or _on_f(path)):
         return path
     if _under_e_repo(path):
         raise Refused(f"refused: {what} is under the E: repository (R1940: inputs are F: copies)")
@@ -410,7 +395,7 @@ def _catalogue_rw(where):
 def guard_out(out) -> str:
     if not out:
         raise Refused("refused: --out is required")
-    if not any(_is_under(out, r) for r in OUT_ROOTS) or _under_e_repo(out) or _is_under(out, ECON_LIVE):
+    if _under_e_repo(out) or not any(_is_under(out, r) for r in OUT_ROOTS) or _is_under(out, ECON_LIVE):  # E: first
         raise Refused(f"refused: --out {out} must be on {OUT_ROOTS} and not under the live store")
     if not cutover.is_cut_over() and not _on_f(out):
         raise Refused(f"refused: --out {out} is not on the F: volume")
@@ -860,15 +845,17 @@ class Allow:
         vals = [v for k, v in row.items() if k not in keys]
         return any(_is_withheld(v) for v in vals) or self.names_gated(*[v for v in vals if isinstance(v, str)])
 
-    def redact(self, table: str, row: dict, salt: str | None = None) -> tuple[dict, bool]:
-        """A D1 row as it may be STORED: every NON-KEY text value in which a gated id appears is replaced by its
-        keyed stand-in (withheld_value - a bytes value D1's JSON answer can never carry), so no snapshot file holds
-        the text (R888) and an equal local value still compares equal."""
+    def redact(self, table: str, row: dict, equal=None) -> tuple[dict, bool]:
+        """A D1 row as it may be STORED: every NON-KEY text value in which a gated id appears is replaced by
+        WITHHELD_EQUAL or WITHHELD_DIFFERS - a bytes value D1's JSON answer can never carry - decided NOW by
+        `equal(column, d1_value)` against the local row (LocalRows.equal). Nothing derived from the text is stored
+        (R888; code-review round 2, C1). Without `equal` every such cell is stored as differing."""
         out, hit = {}, False
         keys = KEY_COLS[table]
         for k, v in row.items():
             if k not in keys and isinstance(v, str) and self.names_gated(v):
-                out[k], hit = withheld_value(salt, v), True
+                same = bool(equal is not None and equal(k, v))
+                out[k], hit = (WITHHELD_EQUAL if same else WITHHELD_DIFFERS), True
             else:
                 out[k] = v
         return out, hit
@@ -895,6 +882,42 @@ class Allow:
 
     def admit(self, table: str, row: dict) -> bool:
         return {"series": self.series, "source": self.source, "license": self.licence}[table](row)
+
+
+class LocalRows:
+    """read-d1's view of the LOCAL catalogue for the cells it must withhold (code-review round 2, C1): one primary-
+    key read per row (a local index seek, no D1 cost), the cell decided by the tool's own compare() - the same rule
+    classify applies, normalisation included. `con` None (no catalogue given) decides every such cell 'differs'."""
+
+    def __init__(self, con, d1_types: dict | None = None):
+        self.con, self.d1_types = con, d1_types or {}
+        self._decl: dict = {}
+        self._key, self._row = None, None
+
+    def _local_row(self, table: str, key):
+        if (table, key) != self._key:
+            self._key, self._row = (table, key), None
+            if table not in self._decl:
+                self._decl[table] = {r[1]: (r[2] or "") for r in self.con.execute(f'PRAGMA table_info("{table}")')}
+            cur = self.con.execute(f'SELECT * FROM "{table}" WHERE "{PK[table]}" = ?', (key,))
+            r = cur.fetchone()
+            if r is not None:
+                self._row = dict(zip([d[0] for d in cur.description], r))
+        return self._row
+
+    def equal(self, table: str, key, col: str, dv) -> bool:
+        if self.con is None or key is None:
+            return False
+        row = self._local_row(table, key)
+        if row is None or col not in row:
+            return False
+        lv = row[col]
+        kind = column_kind(table, col, self._decl[table].get(col), dict(self.d1_types.get(table, [])).get(col))
+        eq = compare(kind, lv, dv)
+        return eq == RAW or (eq == NORM and not (unsafe_number(lv) or unsafe_number(dv)))
+
+    def bind(self, table: str, key):
+        return lambda col, dv: self.equal(table, key, col, dv)
 
 
 def build_allow(con, gate: set, c3n: set) -> Allow:
@@ -1056,10 +1079,12 @@ def _other_tables(master_rows: list) -> list[dict]:
     return out
 
 
-def allowed_count(budget: Budget, db: str, allow: Allow) -> int:
-    """N for the projection: source_counts summed over ALLOWED sources only (review M1)."""
+def allowed_count(budget: Budget, db: str, allow: Allow, home=None) -> int:
+    """source_counts summed over ALLOWED sources only (review M1); with `home`, only the sources for which
+    home(source) is true (the count check: sources whose home is this database - round 2 L3)."""
     rows, _, _ = d1(budget, db, COUNTS_SQL, [], SMALL_EXPECTED, f"{db} source_counts")
-    return sum(int(r.get("n") or 0) for r in rows if r.get("source_id") in allow.sources)
+    return sum(int(r.get("n") or 0) for r in rows if r.get("source_id") in allow.sources
+               and (home is None or home(r.get("source_id"))))
 
 
 def _allow_from_catalogue(catalogue: str, gate: set, c3n: set) -> Allow:
@@ -1169,15 +1194,20 @@ def _d1_error_kind(e: BaseException) -> str:
     if isinstance(e, OSError):
         return "transient"                                              # a network error or a timeout
     text = str(e)
-    if _SIZE_ERROR_RX.search(text):
+    m = _HTTP_STATUS_RX.search(text)
+    if m:                                                               # the HTTP status decides first (round 2 L1):
+        code = int(m.group(1))                                          # "429 ... rate limit exceeded" must RETRY
+        if code == 429 or 500 <= code <= 599:
+            return "transient"
+        return "size" if code == 413 else "other"
+    if _SIZE_ERROR_RX.search(text):                                     # a 200 answer with success:false
         return "size"
-    if _TRANSIENT_RX.search(text):
-        return "transient"
     return "other"
 
 
 def read_db_main(budget: Budget, db: str, snap_path: str, page_rows: int, allow: Allow, probe_e: int | None,
-                 reproject=None) -> dict:
+                 reproject=None, *, local: LocalRows | None = None, catalogue_sha: str | None = None,
+                 shard: dict | None = None) -> dict:
     """Schema, other tables, series pages and the source table of ONE database. Every row is ADMITTED on receipt
     (allow-list) before any check that could print it; only admitted rows are stored. One transaction per page
     stores the page's admitted rows AND the cursor (the last ADMITTED key) - a resume re-reads at most the dropped
@@ -1202,12 +1232,17 @@ def read_db_main(budget: Budget, db: str, snap_path: str, page_rows: int, allow:
                 _state_set(con, "dropped_master", bool(dropped))
                 _state_set(con, "read_started_utc", utcnow())
                 _state_set(con, "cut_over_at_start", cutover.is_cut_over())
-                _state_set(con, "withheld_salt", os.urandom(16).hex())
+                _state_set(con, "catalogue_sha256", catalogue_sha)      # withheld cells were decided against it
         elif bool(_state_get(con, "cut_over_at_start")) != cutover.is_cut_over():
             raise Refused("refused: this snapshot was started on the other side of the CUTOVER flag; a read is never "
                           "resumed across T0 - start a new --out")
-        salt = _state_get(con, "withheld_salt")
+        elif _state_get(con, "catalogue_sha256") != catalogue_sha:
+            raise Refused("refused: the local catalogue changed since this snapshot began (its withheld cells were "
+                          "decided against the old one) - start a new --out")
         types = replay_types(master)
+        if local is None:
+            local = LocalRows(None)
+        local.d1_types = types
         for t, cols in types.items():
             _create_untyped(con, t, [c for c, _ in cols])
         if _state_get(con, "others_done") is None:
@@ -1235,6 +1270,11 @@ def read_db_main(budget: Budget, db: str, snap_path: str, page_rows: int, allow:
             fresh = page_no == 0                                        # page 1 of a NEW snapshot is measured
             p, tries = page_rows, 0
             raw_last = cursor
+            em = _state_get(con, "e_measured")
+            if not fresh and probe_e is not None and em is not None and abs(int(em) - int(probe_e)) > 1:
+                # a resume after an e-drift STOP re-checks it before any page (round 2 L2): re-probe first
+                raise Stop(f"STOP before {db} page {page_no + 1}: the probe's e {probe_e} still differs from the "
+                           f"measured e {em} by more than 1 - re-probe, then resume")
             while True:
                 sql, params = (PAGE_SQL_FIRST, ["", p]) if raw_last is None else (PAGE_SQL, [raw_last, p])
                 try:
@@ -1270,7 +1310,7 @@ def read_db_main(budget: Budget, db: str, snap_path: str, page_rows: int, allow:
                     if set(r) - set(cols):
                         raise Stop(f"STOP: {db} returned series columns its schema lacks")
                     _check_types("series", r, decl)
-                    r2, hit = allow.redact("series", r, salt)
+                    r2, hit = allow.redact("series", r, local.bind("series", r.get("series_id")))
                     keep.append(r2)
                     redacted = redacted or hit
                 end = len(rows) < p
@@ -1309,7 +1349,7 @@ def read_db_main(budget: Budget, db: str, snap_path: str, page_rows: int, allow:
                     e_meas = rr - len(rows)
                     if probe_e is not None and len(rows) == p and abs(e_meas - probe_e) > 1:
                         raise Stop(f"STOP after {db} page {page_no}: rows_read per page differs from the probe's e by "
-                                   f"more than 1 - re-probe, then resume (a resume does not re-check page 1)")
+                                   f"more than 1 - re-probe, then resume (the resume re-checks it before reading)")
                     if probe_e is None and reproject is not None:
                         reproject(db, e_meas)                           # Stop when the measured e breaks the budget
                 if end:
@@ -1318,12 +1358,19 @@ def read_db_main(budget: Budget, db: str, snap_path: str, page_rows: int, allow:
                     raw_last = rows[-1]["series_id"]                    # in memory only; never stored or printed
         if "series" in types and _state_get(con, "series_done", False) and \
                 _state_get(con, "series_expected_done") is None:
+            # D1's own source_counts over the allowed sources whose HOME is this database (round 2 L3: a shard
+            # source's row in the other database's source_counts is not this database's), and the stored rows of
+            # those same sources
+            home = None if shard is None else (lambda s: shard.get(s, PRIMARY) == db)
             try:
-                n = allowed_count(budget, db, allow)                    # allowed sources only: no gated count
+                n = allowed_count(budget, db, allow, home)              # allowed sources only: no gated count
             except RuntimeError:
                 n = None                                                # not measured = a FAILED check in classify
+            stored_home = sum(k for s, k in con.execute('SELECT source_id, COUNT(*) FROM "series" GROUP BY 1')
+                              if home is None or home(s))
             with con:
                 _state_set(con, "series_expected_by_source_counts", n)
+                _state_set(con, "series_stored_home", stored_home)
                 _state_set(con, "series_expected_done", True)
         if "source" in types and _state_get(con, "source_done") is None:
             rows, rr, secs = d1(budget, db, "SELECT * FROM source", [], SMALL_EXPECTED, f"{db} source")
@@ -1331,7 +1378,7 @@ def read_db_main(budget: Budget, db: str, snap_path: str, page_rows: int, allow:
             for r in rows:
                 if allow.source(r):
                     _check_types("source", r, dict(types["source"]))
-                    r2, hit = allow.redact("source", r, salt)
+                    r2, hit = allow.redact("source", r, local.bind("source", r.get("source_id")))
                     keep.append(r2)
                     redacted = redacted or hit
             cols = [c for c, _ in types["source"]]
@@ -1369,7 +1416,7 @@ def d1_licence_refs(snap_path: str) -> set:
         con.close()
 
 
-def read_db_licence(budget: Budget, db: str, snap_path: str, allow: Allow) -> None:
+def read_db_licence(budget: Budget, db: str, snap_path: str, allow: Allow, local: LocalRows | None = None) -> None:
     """The licence table, after BOTH databases' series and source rows are stored: a licence row is admitted only
     when an allowed row (local or D1) references it and its id names no gated id (review H1); its name/url text is
     redacted like any non-key cell (code-review L2: a licence on BOTH sides whose D1 text names a gated id is not
@@ -1379,13 +1426,15 @@ def read_db_licence(budget: Budget, db: str, snap_path: str, allow: Allow) -> No
     try:
         master = [dict(zip(("type", "name", "tbl_name", "sql"), r)) for r in con.execute("SELECT * FROM _master")]
         types = replay_types(master)
-        salt = _state_get(con, "withheld_salt")
+        if local is None:
+            local = LocalRows(None)
+        local.d1_types = types
         if "license" in types and _state_get(con, "license_done") is None:
             rows, rr, secs = d1(budget, db, "SELECT * FROM license", [], SMALL_EXPECTED, f"{db} license")
             keep, redacted = [], False
             for r in rows:
                 if allow.licence(r):
-                    r2, hit = allow.redact("license", r, salt)
+                    r2, hit = allow.redact("license", r, local.bind("license", r.get("license_id")))
                     keep.append(r2)
                     redacted = redacted or hit
             cols = [c for c, _ in types["license"]]
@@ -1422,23 +1471,30 @@ def read_db_licence(budget: Budget, db: str, snap_path: str, allow: Allow) -> No
         con.close()
 
 
-def snapshot_d1(budget: Budget, out: str, page_rows: int, allow: Allow, probe: dict | None, reproject=None) -> dict:
+def snapshot_d1(budget: Budget, out: str, page_rows: int, allow: Allow, probe: dict | None, reproject=None, *,
+                catalogue: str | None = None, catalogue_sha: str | None = None) -> dict:
+    """Both databases. With `catalogue` (read-d1 always passes it) the local catalogue is open read-only for the
+    receipt-time decisions of withheld cells, and every snapshot is bound to its sha256 (round 2, C1)."""
     paths = {db: os.path.join(out, f"d1_{db}.sqlite") for db in DATABASES}
-    for db in DATABASES:
-        read_db_main(budget, db, paths[db], page_rows, allow, (probe["databases"][db]["e"] if probe else None),
-                     reproject)
-    refs = set(allow.licence_refs)
-    for db in DATABASES:
-        refs |= d1_licence_refs(paths[db])
-    allow.licence_refs = refs
-    for db in DATABASES:
-        read_db_licence(budget, db, paths[db], allow)
+    if catalogue is not None and catalogue_sha is None:
+        catalogue_sha = file_sha256(catalogue)
+    shard = load_shard_map()
+    cat_con = _catalogue_ro(catalogue) if catalogue is not None else None
+    try:
+        local = LocalRows(cat_con)
+        for db in DATABASES:
+            read_db_main(budget, db, paths[db], page_rows, allow, (probe["databases"][db]["e"] if probe else None),
+                         reproject, local=local, catalogue_sha=catalogue_sha, shard=shard)
+        refs = set(allow.licence_refs)
+        for db in DATABASES:
+            refs |= d1_licence_refs(paths[db])
+        allow.licence_refs = refs
+        for db in DATABASES:
+            read_db_licence(budget, db, paths[db], allow, local)
+    finally:
+        if cat_con is not None:
+            cat_con.close()
     return paths
-
-
-SNAPSHOT_STATE_KEYS = ("read_started_utc", "read_ended_utc", "cut_over_at_start", "cut_over_at_end", "read_complete",
-                       "series_stored", "series_expected_by_source_counts", "c6_dropped_on_receipt", "withheld_salt",
-                       "allow_list_sha256", "short_page_seen", "transient_retries", "page_rows_halved", "e_measured")
 
 
 def snapshot_state(path: str) -> dict:
@@ -1472,11 +1528,13 @@ def check_snapshots_for_use(snapshots: dict) -> dict:
 
 def snapshot_count_check(snapshots: dict) -> dict:
     """Stored (allowed) series rows vs D1's own source_counts summed over the allowed sources, per database
-    (code-review M1). Not measured is a failure; a shortfall above max(COUNT_TOL_ROWS, COUNT_TOL_FRAC) is one."""
+    (code-review M1), both over the sources whose HOME is that database (round 2 L3). Not measured is a failure;
+    a shortfall above max(COUNT_TOL_ROWS, COUNT_TOL_FRAC) is one."""
     out = {}
     for db, p in snapshots.items():
         st = snapshot_state(p)
-        stored, exp = st.get("series_stored"), st.get("series_expected_by_source_counts")
+        stored = st.get("series_stored_home", st.get("series_stored"))
+        exp = st.get("series_expected_by_source_counts")
         if exp is None or stored is None:
             out[db] = {"stored": stored, "source_counts": exp, "ok": False,
                        "why": "not measured (no source_counts answer, or no series table)"}
@@ -1488,17 +1546,22 @@ def snapshot_count_check(snapshots: dict) -> dict:
     return out
 
 
-def dropped_flags(paths: dict) -> dict:
+def dropped_flags(paths: dict, keys=("dropped_master", "dropped_series", "dropped_source", "dropped_license")) -> dict:
+    """Per database, YES/NO: D1 held ROWS outside the allow-list (dropped on receipt) - the line for the R888
+    process. Hosted text that was only REDACTED is a separate line (redacted_flags; round 2 L4)."""
     out = {}
     for db, p in paths.items():
         con = sqlite3.connect(ro_uri(p), uri=True)  # plain-open: the tool's own snapshot, read-only
         try:
-            out[db] = "YES" if any(_state_get(con, k, False) for k in
-                                   ("dropped_master", "dropped_series", "dropped_source", "dropped_license",
-                                    "redacted_values")) else "NO"
+            out[db] = "YES" if any(_state_get(con, k, False) for k in keys) else "NO"
         finally:
             con.close()
     return out
+
+
+def redacted_flags(paths: dict) -> dict:
+    """Per database, YES/NO: a HOSTED row's non-key text named a gated id and was stored as a marker."""
+    return dropped_flags(paths, ("redacted_values",))
 
 
 def cmd_read_d1(a) -> int:
@@ -1517,26 +1580,39 @@ def cmd_read_d1(a) -> int:
         if probe.get("allow_list_sha256") != allow.digest():
             raise Refused("refused: the probe was made with a different allow-list - probe again")
     res = {"step": "read-d1", "utc_start": utcnow(), "page_rows": a.page_rows, "allow_list_sha256": allow.digest()}
+    t_hash = time.monotonic()
+    cat_sha = file_sha256(catalogue)                                    # every snapshot is bound to it (round 2 C1)
+    res.update(catalogue_sha256=cat_sha, catalogue_hash_s=round(time.monotonic() - t_hash, 1))
     # A RESUME is a snapshot this --out already started - never "some statement in the shared budget ledger" (a
     # probe in the same --out is not a read; code-review M4)
-    resuming = any(snapshot_state(os.path.join(out, f"d1_{db}.sqlite")).get("read_started_utc") for db in DATABASES)
+    started = {db: snapshot_state(os.path.join(out, f"d1_{db}.sqlite")) for db in DATABASES}
+    resuming = any(st.get("read_started_utc") for st in started.values())
     reproject = None
-    if not resuming:
-        ns = {}
-        for db in DATABASES:
-            n = probe["databases"][db].get("allowed_rows_by_source_counts") if probe else None
-            if n is not None:
-                ns[db] = int(n)                                         # the probe measured it: no statement here
-                continue
-            try:
-                ns[db] = allowed_count(budget, db, allow)
-            except RuntimeError:
-                raise Refused(f"refused: {db} has no readable source_counts and no probe N - cannot project") \
-                    from None
-        e = {db: (probe["databases"][db]["e"] if probe else 1) for db in DATABASES}
-        r_proj = projection(ns, a.page_rows, e, 8_000, 0)
-        res["projection"] = {"N_allowed": ns, "e": e, "P": a.page_rows, "R_total": r_proj,
-                             "scan_equivalents": round(r_proj / max(ns[PRIMARY], 1), 2)}
+    ns = {}
+    for db in DATABASES:
+        n = probe["databases"][db].get("allowed_rows_by_source_counts") if probe else None
+        if n is not None:
+            ns[db] = int(n)                                             # the probe measured it: no statement here
+            continue
+        try:
+            ns[db] = allowed_count(budget, db, allow)
+        except RuntimeError:
+            raise Refused(f"refused: {db} has no readable source_counts and no probe N - cannot project") from None
+    # e: the probe's; on a resume without one, the e this snapshot MEASURED on its page 1; else the guess 1
+    e = {db: int(probe["databases"][db]["e"]) if probe else
+         (int(started[db]["e_measured"]) if started[db].get("e_measured") is not None else 1) for db in DATABASES}
+    r_proj = projection(ns, a.page_rows, e, 8_000, 0)
+    res["projection"] = {"N_allowed": ns, "e": e, "P": a.page_rows, "R_total": r_proj, "resume": resuming,
+                         "scan_equivalents": round(r_proj / max(ns[PRIMARY], 1), 2)}
+    if resuming:
+        # a resume re-projects the WHOLE read (round 2 L2) and refuses when it alone exceeds the budget; with a
+        # probe, read_db_main also re-checks the probe's e against the measured one before the next page
+        say(f"read-d1: resuming; {budget.spent:,} rows already read by earlier runs count against the budget; the "
+            f"whole read re-projected at {r_proj:,} rows (e {e})")
+        if r_proj > budget.limit:
+            raise Refused(f"refused: the whole read re-projects at {r_proj:,} rows, above --budget-rows "
+                          f"{budget.limit:,} - re-probe, raise the budget deliberately, or start a new --out")
+    else:
         say(f"read-d1: projected {r_proj:,} rows read (allowed N {ns}, P {a.page_rows}, e {e}); budget {budget.limit:,}")
         if r_proj + budget.spent > budget.limit:
             raise Refused(f"refused: the projection {r_proj:,} is above --budget-rows {budget.limit:,}")
@@ -1552,16 +1628,17 @@ def cmd_read_d1(a) -> int:
                 if r + spent0 > budget.limit:
                     raise Stop(f"STOP after {db} page 1: the measured e makes the projection {r:,} exceed "
                                f"--budget-rows {budget.limit:,} - re-project with a probe, then resume")
-    else:
-        say(f"read-d1: resuming; {budget.spent:,} rows already read by earlier runs count against the budget")
     try:
-        paths = snapshot_d1(budget, out, a.page_rows, allow, probe, reproject)
+        paths = snapshot_d1(budget, out, a.page_rows, allow, probe, reproject, catalogue=catalogue,
+                            catalogue_sha=cat_sha)
         res["outside_the_allow_list_dropped"] = dropped_flags(paths)
+        res["hosted_text_redacted"] = redacted_flags(paths)
     finally:
         res.update(rows_read_total=budget.spent, statements=budget.statements, utc_end=utcnow())
         write_json(os.path.join(out, f"read_d1_{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%SZ}.json"), res)
-    say(f"read-d1: {budget.statements} statement(s) in all runs, {budget.spent:,} rows read; D1 held rows outside "
-        f"the allow-list: {res['outside_the_allow_list_dropped']}")
+    say(f"read-d1: {budget.statements} statement(s) in all runs, {budget.spent:,} rows read; D1 held ROWS outside "
+        f"the allow-list (dropped): {res['outside_the_allow_list_dropped']}; hosted text redacted: "
+        f"{res['hosted_text_redacted']}")
     return 0
 
 
@@ -1792,7 +1869,6 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
     for db, sc in snaps.items():
         if sc is not None and _state_get(sc, "allow_list_sha256") != allow.digest():
             raise Refused(f"refused: the {db} snapshot was made with a different allow-list (re-read D1)")
-    salts = {db: (_state_get(sc, "withheld_salt") if sc is not None else None) for db, sc in snaps.items()}
     o = Out(os.path.join(out_dir, "classify.sqlite"))
     dig_before, dig_after = Digests(), Digests()
     plan = {"cells": [], "inserts": [], "deletes": []}
@@ -1924,11 +2000,13 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                             stats["c3_served"] += int(fl["served_object"])
                         if _is_c6_row(key, d):
                             stats["c6_rows"] += 1                    # V7 counts it whatever its class (M6/M8)
+                    if t == "license":                               # S4d/B32: decided after the series pass,
+                        # never inserted (see refs_after above); BEFORE the gated-text skip, so a licence row
+                        # whose name/url text was withheld is still listed by its (allowed) key (round 2 L5)
+                        pending_lic.append((key, d, d_db, allow.row_names_gated(d, t)))
+                        continue
                     if allow.row_names_gated(d, t):                  # a value names a gated id: not taken, never
                         stats["withheld_values"] = True              # stored or counted - only the YES line
-                        continue
-                    if t == "license":                               # S4d/B32: decided after the series pass,
-                        pending_lic.append((key, d, d_db))           # never inserted (see refs_after above)
                         continue
                     if t == "series" and s in c3n:
                         if d.get("source_id") not in local_src or d.get("license_id") not in local_lic:
@@ -1961,9 +2039,10 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                     is_c6 = (s == C6_SOURCE or (t == "series" and _is_c6_row(key, l))) and \
                         (key, col) not in c7.v7_exempt
                     if _is_withheld(dv):
-                        # D1's value named a gated id and is stored as its keyed stand-in: equal when the local
-                        # value hashes to it; otherwise V7 counts it and only the YES line says it exists (R888)
-                        if withheld_equal(salts.get(d_db), dv, lv):
+                        # D1's value named a gated id; read-d1 decided at receipt, against this same catalogue
+                        # (catalogue_sha256), whether the local value equals it: '=' counts as equal; otherwise
+                        # V7 counts it and only the YES line says it exists (R888)
+                        if _withheld_is_equal(dv):
                             o.count(t, s, col, "equal_withheld")
                             stats["equal_withheld"] += 1
                             continue
@@ -2036,11 +2115,14 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
         if local_count != streamed:
             raise Failed("local series: COUNT(*) differs from the rows the ordered read saw - a row with a NULL or "
                          "non-text key was missed")
-        for key, d, d_db in pending_lic:                              # every row is decided: refs_after is final
+        for key, d, d_db, text_withheld in pending_lic:               # every row is decided: refs_after is final
             if key in refs_after:
+                if text_withheld:
+                    stats["withheld_values"] = True
                 o.row("license", key, None, "LIC-HELD-ROW", HELD,
-                      json.dumps({"d1_only": True, "referenced_after_the_reconcile": True}),
-                      json.dumps(d, default=_jdefault), d_db)
+                      json.dumps({"d1_only": True, "referenced_after_the_reconcile": True,
+                                  "text_withheld": bool(text_withheld)}),
+                      None if text_withheld else json.dumps(d, default=_jdefault), d_db)   # no marker is stored
                 o.count("license", None, None, "rows_LIC-HELD-ROW")
                 stats["licence_rows_held"] += 1
             else:
@@ -2069,7 +2151,7 @@ _METRIC_MAP = {"decision_local": "cells_kept_local", "decision_d1": "cells_taken
 
 
 def summarise(out_dir: str, result: dict, c7: C7, inputs: dict, compare_to: str | None, allow: Allow,
-              dropped: dict | None = None) -> dict:
+              dropped: dict | None = None, redacted: dict | None = None) -> dict:
     db = sqlite3.connect(os.path.join(out_dir, "classify.sqlite"))  # plain-open: the tool's own result file
     try:
         per: dict[str, dict] = {}
@@ -2120,7 +2202,8 @@ def summarise(out_dir: str, result: dict, c7: C7, inputs: dict, compare_to: str 
              "c7_sizes": {"ids": sum(1 for k in c7.ids if allow.series({"series_id": k})),
                           "cells": sum(1 for (k, _c) in c7.cells if allow.series({"series_id": k})),
                           "sources": sorted(x for x in c7.srcs if x in allow.sources)},
-             "outside_the_allow_list_dropped": dropped or {}, "inputs": inputs,
+             "outside_the_allow_list_dropped": dropped or {}, "hosted_text_redacted": redacted or {},
+             "inputs": inputs,
              "plan_counts": {k: len(v) for k, v in result["plan"].items()},
              "classify_db": os.path.join(out_dir, "classify.sqlite"),
              "caveats": [
@@ -2185,8 +2268,10 @@ def _side_by_side(compare_to: str, now: dict, db, allow: Allow) -> dict:
 def render_md(s: dict) -> str:
     L = ["# Catalogue reconcile - the 6c summary", "", f"UTC {s['utc']}. Plan writes: {s['plan_counts']}.", ""]
     L += [f"- {c}" for c in s["caveats"]]
-    L += [f"- D1 held rows outside the allow-list (dropped on receipt, not named or counted): {v} ({k})"
-          for k, v in (s.get("outside_the_allow_list_dropped") or {}).items()]
+    L += [f"- D1 held ROWS outside the allow-list (dropped on receipt, not named or counted - for the R888 "
+          f"process): {v} ({k})" for k, v in (s.get("outside_the_allow_list_dropped") or {}).items()]
+    L += [f"- HOSTED rows whose non-key text named a gated id (stored as a marker, decided at receipt): {v} ({k})"
+          for k, v in (s.get("hosted_text_redacted") or {}).items()]
     L += [f"- a differing value or a D1-only row names a gated id (kept local, not listed): "
           f"{'YES' if s['stats'].get('withheld_values') else 'NO'}"]
     inp = s.get("inputs") or {}
@@ -2282,6 +2367,14 @@ def cmd_classify(a) -> int:
             raise Refused(f"refused: no D1 snapshot for {db} in --snapshot-dir (run read-d1 first)")
     reads = check_snapshots_for_use(snapshots)                        # complete; after T0 read wholly after it (H1)
     counts = snapshot_count_check(snapshots)                           # stored vs source_counts (M1)
+    say("classify: hashing the catalogue ...")
+    t_hash = time.monotonic()
+    cat_sha = file_sha256(catalogue)
+    cat_hash_s = time.monotonic() - t_hash
+    for db, p in snapshots.items():                                    # the receipt-time decisions' binding (C1)
+        if snapshot_state(p).get("catalogue_sha256") != cat_sha:
+            raise Refused(f"refused: the {db} snapshot was read against another catalogue (its withheld cells were "
+                          f"decided against that one) - read D1 again against this catalogue")
     gate = load_gate()
     runloc, reg_sha = load_run_locations()
     shard = load_shard_map()
@@ -2303,10 +2396,6 @@ def cmd_classify(a) -> int:
     manifest = Manifest(a.manifest) if a.manifest else None
     served = ServedIndex(a.served_index) if a.served_index else None
     utc0 = utcnow()
-    say("classify: hashing the catalogue ...")
-    t_hash = time.monotonic()
-    cat_sha = file_sha256(catalogue)
-    cat_hash_s = time.monotonic() - t_hash
     result = classify(catalogue=catalogue, snapshots=snapshots, out_dir=out, allow=allow, runloc=runloc, shard=shard,
                       c1=c1, c3n=c3n, c7=c7, deletes=deletes, manifest=manifest, served=served)
     if file_sha256(catalogue) != cat_sha:
@@ -2333,7 +2422,7 @@ def cmd_classify(a) -> int:
     sha = file_sha256(plan_path)
     with open(plan_path + ".sha256", "w", encoding="utf-8", newline="\n") as fh:
         fh.write(sha + "\n")
-    s = summarise(out, result, c7, inputs, a.compare_to, allow, dropped_flags(snapshots))
+    s = summarise(out, result, c7, inputs, a.compare_to, allow, dropped_flags(snapshots), redacted_flags(snapshots))
     say(f"classify: plan sha256 {sha}; writes {plan['counts']}; summary in --out")
     say("totals: " + json.dumps(s["totals"]))
     rc = 0
@@ -2743,6 +2832,12 @@ def cmd_rehearse(a) -> int:
     hash_s = round(time.monotonic() - t_hash, 3)
     if not same:
         raise Refused("refused: the copy is not the one the plan was made from (path or sha256 differs)")
+    # apply hashes both D1 snapshot files under the lock too (round 2 L7): time them here for the S11 slot
+    t_snap = time.monotonic()
+    for snap in plan["snapshots"].values():
+        if os.path.isfile(snap["path"]):
+            file_sha256(snap["path"])
+    snap_hash_s = round(time.monotonic() - t_snap, 3)
     gate = load_gate()
     if plan["inputs"].get("gate_sha256") != gate_sha():
         raise Refused("refused: the gate changed since the plan was made")
@@ -2750,15 +2845,17 @@ def cmd_rehearse(a) -> int:
     queries = load_ids(guard_input(a.queries, "--queries")) if a.queries else None
     con = _catalogue_rw(path)
     rec = {"step": "rehearse", "utc_start": utcnow(), "plan_sha256": a.plan_sha, "hash_s": hash_s,
-           "catalogue_bytes": os.path.getsize(path)}
+           "snapshot_hash_s": snap_hash_s, "catalogue_bytes": os.path.getsize(path)}
     try:
         allow = _allow_for_plan(con, plan, gate, c3n)
         rec["fts_A"] = {}
         run_plan(con, path, plan, out, "rehearse", "rebuild_fts", a.sample_every, allow, rec["fts_A"])
         rec["verify"] = rec["fts_A"]["verify"]
-        # S11's lock-held time (code-review L4): the build hash + the one transaction (writes + FTS + verify)
-        rec["s11_lock_held_estimate_s"] = round(hash_s + rec["fts_A"]["elapsed_s"], 3)
-        rec["s11_pieces_s"] = {"hash": hash_s, "writes": rec["fts_A"]["writes_s"], "fts": rec["fts_A"]["fts_s"],
+        # S11's lock-held time (code-review L4, round 2 L7): the snapshot hashes + the build hash + the one
+        # transaction (writes + FTS + verify)
+        rec["s11_lock_held_estimate_s"] = round(snap_hash_s + hash_s + rec["fts_A"]["elapsed_s"], 3)
+        rec["s11_pieces_s"] = {"snapshot_hash": snap_hash_s, "hash": hash_s, "writes": rec["fts_A"]["writes_s"],
+                               "fts": rec["fts_A"]["fts_s"],
                                "verify": rec["fts_A"]["verify_s"], "v4": rec["verify"].get("v4_s"),
                                "v5_content": rec["verify"].get("fts_content_check_s"),
                                "commit": rec["fts_A"].get("commit_s")}
@@ -2799,9 +2896,11 @@ def cmd_apply(a) -> int:
     t_apply = time.monotonic()
     if not plan.get("cut_over_at_classify"):
         raise Refused("refused: the plan was classified before the flag; S11 needs a classify after S10")
+    t_snap = time.monotonic()
     for db, snap in plan["snapshots"].items():
         if not os.path.isfile(snap["path"]) or file_sha256(snap["path"]) != snap["sha256"]:
             raise Refused(f"refused: the {db} D1 snapshot differs from the plan's")
+    snap_hash_s = round(time.monotonic() - t_snap, 3)                  # under the lock (round 2 L7)
     reads = check_snapshots_for_use({db: snap["path"] for db, snap in plan["snapshots"].items()})   # H1, again
     for db, snap in plan["snapshots"].items():
         if any(snap.get(k) != reads[db].get(k) for k in reads[db]):
@@ -2832,13 +2931,13 @@ def cmd_apply(a) -> int:
         raise Refused("refused: the build changed since the plan was made (sha256 differs)")
     con = _catalogue_rw(path)
     rec = {"step": "apply", "utc_start": utcnow(), "plan_sha256": a.plan_sha, "fts_form": a.fts_form,
-           "hash_s": hash_s, "catalogue_bytes": os.path.getsize(path)}
+           "hash_s": hash_s, "snapshot_hash_s": snap_hash_s, "catalogue_bytes": os.path.getsize(path)}
     try:
         allow = _allow_for_plan(con, plan, gate, c3n)
         rec["fts"] = {}
         run_plan(con, path, plan, out, "apply", a.fts_form, a.sample_every, allow, rec["fts"])
         rec["verify"] = rec["fts"]["verify"]
-        rec["s11_pieces_s"] = {"hash": hash_s, "writes": rec["fts"]["writes_s"], "fts": rec["fts"]["fts_s"],
+        rec["s11_pieces_s"] = {"snapshot_hash": snap_hash_s, "hash": hash_s, "writes": rec["fts"]["writes_s"], "fts": rec["fts"]["fts_s"],
                                "verify": rec["fts"]["verify_s"], "v4": rec["verify"].get("v4_s"),
                                "v5_content": rec["verify"].get("fts_content_check_s"),
                                "commit": rec["fts"].get("commit_s")}

@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import sqlite3
+import time
 import types
 
 import pytest
@@ -569,7 +570,9 @@ def test_m4_without_a_probe_page_one_is_measured_and_the_total_reprojected(env, 
     assert len([c for c in fake.calls if "FROM series WHERE" in c[1]]) == 1     # stopped before page 2
 
 
-def test_l10_a_resume_does_not_repeat_the_page_one_drift_stop(env):
+def test_l10_r2_l2_a_resume_after_a_drift_stop_rechecks_before_reading(env):
+    # round 2 L2 supersedes round 1 L10: the resume re-checks the drift BEFORE any page (no page is read twice and
+    # none is read with a probe that is known to be wrong); a fresh probe with the measured e reads on
     tmp, fake = env
     fake.add(rc.PRIMARY, "series", [srow(f"a:{i}") for i in range(9)])
     fake.finish()
@@ -577,9 +580,28 @@ def test_l10_a_resume_does_not_repeat_the_page_one_drift_stop(env):
     fake.e = 5
     with pytest.raises(rc.Stop, match="differs from the probe"):
         snapshot(fake, local, tmp / "s", page_rows=3, probe_e=1)
-    snapshot(fake, local, tmp / "s", page_rows=3, probe_e=1)       # resumed with the same probe: reads on
+    fake.calls.clear()
+    with pytest.raises(rc.Stop, match="still differs from the measured e"):
+        snapshot(fake, local, tmp / "s", page_rows=3, probe_e=1)   # the same wrong probe: refused before a page
+    assert not [c for c in fake.calls if "FROM series WHERE" in c[1]]
+    snapshot(fake, local, tmp / "s", page_rows=3, probe_e=5)       # re-probed: reads on
     st = rc.snapshot_state(str(tmp / "s" / f"d1_{rc.PRIMARY}.sqlite"))
     assert st["read_complete"] is True and st["e_measured"] == 5
+
+
+def test_r2_l2_a_resume_reprojects_the_whole_read_and_refuses_above_the_budget(env, capsys):
+    tmp, fake = env
+    fake.add(rc.PRIMARY, "series", [srow(f"a:{i:03d}") for i in range(30)])
+    fake.finish()
+    local = make_local(tmp / "l.db", [srow("a:000")])
+    fake.e = 400
+    argv = ["read-d1", "--out", str(tmp / "r"), "--catalogue", local, "--budget-rows", "9000", "--page-rows", "3"]
+    assert rc.main(argv) == 3                              # page 1 measured e 400: STOP (M4)
+    fake.calls.clear()
+    _say(capsys)
+    assert rc.main(argv) == 2                              # the resume re-projects with the MEASURED e: refused
+    assert "re-projects at" in _say(capsys)
+    assert not [c for c in fake.calls if "FROM series WHERE" in c[1]]
 
 
 # ---- L1: errors on a page ------------------------------------------------------------------------------------------
@@ -670,12 +692,204 @@ def test_l9_c7_sizes_count_allowed_ids_only(env):
     assert s["c7_sizes"]["ids"] == 1
 
 
-def test_l4_rehearse_records_the_s11_time_pieces(env):
+def test_l4_rehearse_records_the_s11_time_pieces(env, monkeypatch):
     tmp, fake = env
     local, out, sha, _plan = _plan_with(tmp, fake, [srow("c1src:1", unit="o1")], [srow("c1src:1", unit="n1")],
                                         c1_rows=[("c1src", "unit")])
+    real = rc.file_sha256
+
+    def slow_for_snapshots(p, *a):
+        if os.path.basename(str(p)).startswith("d1_"):
+            time.sleep(0.1)                                # a measurable snapshot hash (the real ones are GBs)
+        return real(p, *a)
+    monkeypatch.setattr(rc, "file_sha256", slow_for_snapshots)
     assert rc.main(["rehearse", "--out", str(tmp / "reh"), "--catalogue", local, "--plan", str(out / "plan.json"),
                     "--plan-sha", sha, "--sample-every", "0.01"]) == 0
     rec = json.load(open(tmp / "reh" / "rehearse.json"))
-    assert set(rec["s11_pieces_s"]) >= {"hash", "writes", "fts", "verify", "v4", "v5_content", "commit"}
-    assert rec["s11_lock_held_estimate_s"] >= rec["hash_s"] and rec["fts_A"]["one_transaction"] is True
+    assert set(rec["s11_pieces_s"]) >= {"snapshot_hash", "hash", "writes", "fts", "verify", "v4", "v5_content",
+                                        "commit"}                  # round 2 L7: the snapshot hashes are in it
+    assert rec["snapshot_hash_s"] >= 0.2
+    assert abs(rec["s11_lock_held_estimate_s"]
+               - (rec["snapshot_hash_s"] + rec["hash_s"] + rec["fts_A"]["elapsed_s"])) < 0.01
+    assert rec["fts_A"]["one_transaction"] is True
+
+
+# ---- round 2 C1: withheld cells decided AT RECEIPT; no salt, no digest; the snapshot bound to its catalogue -------
+
+def _marker_hits(dirs):
+    """(raw marker hits, hex ($blob) marker hits) in every file under dirs."""
+    raw, hexed = [], []
+    for d in dirs:
+        for base, _ds, fs in os.walk(d):
+            for name in fs:
+                b = open(os.path.join(base, name), "rb").read()
+                if rc.WITHHELD in b:
+                    raw.append(name)
+                if rc.WITHHELD.hex().encode() in b or rc.WITHHELD.hex().upper().encode() in b:
+                    hexed.append(name)
+    return raw, hexed
+
+
+def test_c1_withheld_cells_are_decided_at_receipt_and_store_no_digest(env):
+    tmp, fake = env
+    d1_rows = [srow("sec_edgar:X", title="Filer GATEDSRC Holdings"),             # equal on both sides
+               srow("sec_edgar:Y", title="GATEDSRC new name"),                    # differs
+               srow("alpha:1", metadata='{"note":"gatedsrc x","k":1}')]           # NORM-equal (key order)
+    fake.add(rc.PRIMARY, "series", d1_rows)
+    fake.finish()
+    local = make_local(tmp / "l.db", [srow("sec_edgar:X", title="Filer GATEDSRC Holdings"),
+                                      srow("sec_edgar:Y", title="GATEDSRC old name"),
+                                      srow("alpha:1", metadata='{"k":1,"note":"gatedsrc x"}')])
+    snaps, _ = snapshot(fake, local, tmp / "snap")
+    c = sqlite3.connect(snaps[rc.PRIMARY])
+    got = {(k, col): v for k in ("sec_edgar:X", "sec_edgar:Y", "alpha:1") for col, v in
+           zip(("title", "metadata"), c.execute("SELECT title, metadata FROM series WHERE series_id=?", (k,)).fetchone())}
+    keys = {r[0] for r in c.execute("SELECT k FROM _state")}
+    c.close()
+    assert got[("sec_edgar:X", "title")] == rc.WITHHELD_EQUAL
+    assert got[("sec_edgar:Y", "title")] == rc.WITHHELD_DIFFERS
+    assert got[("alpha:1", "metadata")] == rc.WITHHELD_EQUAL                     # normalisation kept
+    assert all(len(v) == len(rc.WITHHELD) + 1 for v in got.values() if isinstance(v, bytes))   # no digest
+    assert "withheld_salt" not in keys and rc.snapshot_state(snaps[rc.PRIMARY])["catalogue_sha256"] == \
+        rc.file_sha256(local)
+    hits, _ = _grep_outputs([tmp / "snap"], ["Filer GATEDSRC", "GATEDSRC new", "gatedsrc x"])
+    assert hits == []
+    res = run_classify(local, snaps, tmp / "out")
+    assert res["stats"]["equal_withheld"] == 2 and res["stats"]["c6_cells"] == 1
+    rc.summarise(str(tmp / "out"), res, rc.C7(), {"gate_sha256": "g"}, None, allow_for(local, snaps),
+                 rc.dropped_flags(snaps), rc.redacted_flags(snaps))
+    raw_out, hex_out = _marker_hits([tmp / "out"])
+    assert raw_out == [] and hex_out == []                 # no output carries a marker, raw or as {"$blob": hex}
+    raw_snap, _ = _marker_hits([tmp / "snap"])
+    assert raw_snap                                        # positive control: the snapshot does hold the markers
+
+
+def test_c1_binding_classify_refuses_a_snapshot_read_against_another_catalogue(env, capsys):
+    tmp, fake = env
+    fake.add(rc.PRIMARY, "series", [srow("a:1")])
+    fake.finish()
+    local = make_local(tmp / "l.db", [srow("a:1")])
+    snapshot(fake, local, tmp / "snap")
+    _c1(tmp, [])
+    argv = ["classify", "--out", str(tmp / "cls"), "--catalogue", local, "--snapshot-dir", str(tmp / "snap"),
+            "--c1", str(tmp / "c1.tsv")]
+    assert rc.main(argv) == 0                              # positive control: the same catalogue
+    c = sqlite3.connect(local)
+    c.execute("UPDATE series SET title='changed after the read' WHERE series_id='a:1'")
+    c.commit()
+    c.close()
+    _say(capsys)
+    assert rc.main(argv) == 2 and "read against another catalogue" in _say(capsys)
+
+
+def test_c1_a_resume_refuses_a_changed_catalogue(env):
+    tmp, fake = env
+    fake.add(rc.PRIMARY, "series", [srow("a:1")])
+    fake.finish()
+    local = make_local(tmp / "l.db", [srow("a:1")])
+    snaps, _ = snapshot(fake, local, tmp / "snap")
+    allow = rc._allow_from_catalogue(local, set(GATE), {"sec_edgar"})
+    with pytest.raises(rc.Refused, match="local catalogue changed since this snapshot began"):
+        rc.read_db_main(rc.Budget(10 ** 5), rc.PRIMARY, snaps[rc.PRIMARY], 3, allow, None,
+                        catalogue_sha="0" * 64)
+
+
+# ---- round 2 L1, L3, L4, L5, L6 --------------------------------------------------------------------------------------
+
+def test_r2_l1_the_http_status_decides_before_the_text():
+    k = rc._d1_error_kind
+    assert k(RuntimeError("D1 econ-catalog: HTTP 429 b'rate limit exceeded'")) == "transient"
+    assert k(RuntimeError("D1 econ-catalog: HTTP 503 b'payload service'")) == "transient"
+    assert k(RuntimeError("D1 econ-catalog: HTTP 413 b'payload too large'")) == "size"
+    assert k(RuntimeError("D1 econ-catalog: HTTP 400 b'too large'")) == "other"
+    assert k(RuntimeError('D1 econ-catalog: [{"code": 7500, "message": "response too large"}]')) == "size"
+    assert k(RuntimeError("D1 econ-catalog: no such column: x")) == "other"
+    assert k(OSError("timed out")) == "transient"
+
+
+def test_r2_l1_a_rate_limit_exceeded_is_retried_not_halved(env, monkeypatch):
+    tmp, fake = env
+    monkeypatch.setattr(rc, "RETRY_SLEEPS", (0.0, 0.0, 0.0))
+    fake.add(rc.PRIMARY, "series", [srow(f"a:{i:03d}") for i in range(300)])
+    fake.finish()
+    local = make_local(tmp / "l.db", [srow("a:000")])
+    real = fake.__call__
+    state = {"n": 0}
+
+    def limited(db, sql, params):
+        if "FROM series WHERE" in sql:
+            state["n"] += 1
+            if state["n"] == 1:
+                raise RuntimeError("D1 econ-catalog: HTTP 429 b'rate limit exceeded'")
+        return real(db, sql, params)
+    monkeypatch.setattr(rc, "D1_QUERY", limited)
+    snaps, _ = snapshot(fake, local, tmp / "snap", page_rows=200)
+    c = sqlite3.connect(snaps[rc.PRIMARY])
+    asked = [r[0] for r in c.execute("SELECT page_rows_asked FROM _pages WHERE tbl='series'")]
+    c.close()
+    assert asked and max(asked) == 200
+
+
+def test_r2_l3_the_count_check_sums_only_sources_whose_home_is_that_database(env, monkeypatch):
+    tmp, fake = env
+    monkeypatch.setattr(rc, "COUNT_TOL_ROWS", 0)
+    monkeypatch.setattr(rc, "COUNT_TOL_FRAC", 0.0)
+    fake.add(rc.PRIMARY, "series", [srow("a:1")])
+    fake.add(rc.CLIMATE, "series", [srow("noaa:1")])
+    fake.finish()
+    fake.raw(rc.PRIMARY, "INSERT INTO source_counts VALUES ('noaa', 5)")    # a shard source's row in the primary
+    local = make_local(tmp / "l.db", [srow("a:1"), srow("noaa:1")])
+    snaps, _ = snapshot(fake, local, tmp / "snap")
+    chk = rc.snapshot_count_check(snaps)
+    assert chk[rc.PRIMARY]["ok"] is True and chk[rc.PRIMARY]["source_counts"] == 1
+    assert chk[rc.CLIMATE]["ok"] is True and chk[rc.CLIMATE]["source_counts"] == 1
+
+
+def test_r2_l4_dropped_rows_and_redacted_hosted_text_are_two_lines(env):
+    tmp, fake = env
+    fake.add(rc.PRIMARY, "series", [srow("alpha:1", title="about gatedsrc")])
+    fake.finish()
+    local = make_local(tmp / "l.db", [srow("alpha:1", title="about gatedsrc")])
+    snaps, _ = snapshot(fake, local, tmp / "snap")
+    res = run_classify(local, snaps, tmp / "out")
+    s = rc.summarise(str(tmp / "out"), res, rc.C7(), {"gate_sha256": "g"}, None, allow_for(local, snaps),
+                     rc.dropped_flags(snaps), rc.redacted_flags(snaps))
+    assert s["outside_the_allow_list_dropped"][rc.PRIMARY] == "NO"
+    assert s["hosted_text_redacted"][rc.PRIMARY] == "YES"
+    md = open(tmp / "out" / "summary.md", encoding="utf-8").read()
+    assert "HOSTED rows whose non-key text named a gated id" in md and "D1 held ROWS outside" in md
+
+
+def test_r2_l5_a_d1_only_licence_row_with_withheld_text_is_still_held_by_its_key(env):
+    tmp, fake = env
+    fake.add(rc.PRIMARY, "series", [srow("alpha:3", license_id="lic-z")])
+    fake.add(rc.PRIMARY, "license", [lic("lic-open"), lic("lic-z", name="terms of the gatedsrc programme")])
+    fake.finish()
+    local = make_local(tmp / "l.db", [srow("alpha:3", license_id="lic-z")], [src("alpha")], [lic("lic-open")])
+    snaps, _ = snapshot(fake, local, tmp / "snap")
+    out = tmp / "out"
+    run_classify(local, snaps, out)
+    held = q(out, "SELECT flags, row_json FROM rows WHERE tbl='license' AND key='lic-z' AND cls='LIC-HELD-ROW'")
+    assert len(held) == 1
+    flags, row_json = held[0]
+    assert json.loads(flags)["text_withheld"] is True and row_json is None
+    raw_out, hex_out = _marker_hits([out])
+    assert raw_out == [] and hex_out == []
+
+
+def test_r2_l6_guard_out_and_an_own_list_test_the_e_string_before_any_resolve(env, monkeypatch):
+    seen = []
+    for mod, name in ((os, "stat"), (os.path, "exists"), (os.path, "realpath"), (os.path, "isfile"),
+                      (os.path, "samefile")):
+        real = getattr(mod, name)
+
+        def spy(p, *a, _real=real, **k):
+            seen.append(str(p))
+            return _real(p, *a, **k)
+        monkeypatch.setattr(mod, name, spy)
+    with pytest.raises(rc.Refused):
+        rc.guard_out(os.path.join(cp.LIVE_STORE_ROOT, "out"))
+    with pytest.raises(rc.Refused):
+        rc.guard_input(os.path.join(cp.LIVE_STORE_ROOT, "tools", "selfhost", "reconcile", "c1_columns.tsv"), "--c1",
+                       own_list=True)
+    assert not [p for p in seen if p.lower().startswith("e:")], seen

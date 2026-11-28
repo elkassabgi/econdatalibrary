@@ -198,7 +198,7 @@ def snapshot(fake, local, out, page_rows=3, probe_e=None, budget=10 ** 6, c3n=("
     os.makedirs(out, exist_ok=True)
     b = rc.Budget(budget, os.path.join(str(out), "budget.sqlite"))
     paths = rc.snapshot_d1(b, str(out), page_rows, allow_for(local, None, c3n), None if probe_e is None else
-                           {"databases": {db: {"e": probe_e} for db in rc.DATABASES}})
+                           {"databases": {db: {"e": probe_e} for db in rc.DATABASES}}, catalogue=str(local))
     return paths, b
 
 
