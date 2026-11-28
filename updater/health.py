@@ -22,6 +22,7 @@ from collections import Counter
 from datetime import date, datetime, time as dtime, timedelta, timezone
 
 from . import config, registry
+from .calendars import holiday_test
 from .state import StateStore
 from .strategies.base import CADENCE_DAYS, NON_FAILURE_NOTES, PROBE_NOTE
 
@@ -108,13 +109,20 @@ def _age_days(iso, now):
     return max(0.0, age)
 
 
-def _business_age_days(iso, now) -> "float | None":
+def _business_age_days(iso, now, calendar=None) -> "float | None":
     """Age counted in BUSINESS days (Mon-Fri) — for daily-cadence market/FX
     sources that legitimately publish nothing on weekends. A Friday observation
     checked Monday 08:45 UTC is 3.04 calendar days old but only ~1 business day
     old; the calendar version red-flagged every live FX source every Monday
     morning (observed 2026-07-13: cnb + frankfurter, succ_age 0d, gate failure).
-    Weekend days between the observation and now simply don't count."""
+    Weekend days between the observation and now simply don't count.
+
+    `calendar` is the source's registry `business_calendar` (updater/calendars.py): that
+    publisher's holidays do not count either, exactly as a Saturday does not. ofr read
+    RED-DATA on 2026-11-27 holding OFR's own newest obs (11-24) because Thanksgiving 11-26
+    counted as a business day (3.4 > 3). None, or a name calendars.py does not know, means
+    weekends only: the pre-2026-11-27 arithmetic, pinned against a verbatim copy of it by
+    tests/test_health_business_calendar.py."""
     cal = _age_days(iso, now)
     if cal is None:
         return None
@@ -125,10 +133,15 @@ def _business_age_days(iso, now) -> "float | None":
         obs = datetime.fromisoformat(s)
     except Exception:
         return cal
-    weekend = 0.0
+    is_holiday = holiday_test(calendar)
+
+    def _closed(day):
+        return day.weekday() >= 5 or (is_holiday is not None and is_holiday(day))
+
+    weekend = 0.0   # whole and partial days the publisher is closed: Sat/Sun, plus declared holidays
     d = obs.date()
     while d < now.date():
-        if d.weekday() >= 5:  # whole Sat/Sun days between obs and now
+        if _closed(d):  # whole Sat/Sun (and declared holiday) days between obs and now
             weekend += 1.0
         d += timedelta(days=1)
     # ...and the PARTIAL day we are standing in. The loop stops at now.date(), so the
@@ -139,7 +152,8 @@ def _business_age_days(iso, now) -> "float | None":
     # newest observation (both verified 2026-07-22 by direct query). Deducting today's
     # elapsed fraction makes weekend ages land on whole days, so a source that is level
     # with upstream stays quiet Sat/Sun and only goes RED once a business day passes it by.
-    if now.weekday() >= 5:
+    # A declared holiday today is treated the same way.
+    if _closed(now.date()):
         weekend += (now - datetime.combine(now.date(), dtime(0), tzinfo=now.tzinfo)).total_seconds() / 86400.0
     # Round before returning: cal and weekend are both fractions of a day, so their
     # difference lands on values like 3.0000000000000004 at some times of day but 3.0 at
@@ -1374,7 +1388,15 @@ def assess(store=None) -> dict:
         # staleness is judged in BUSINESS days for daily sources (FX/market feeds
         # publish nothing Sat/Sun — calendar age red-flagged every Monday morning);
         # calendar days for everything else. Display keeps calendar obs_age.
-        eff_obs_age = _business_age_days(newest_obs, now) if cadence == "daily" else obs_age
+        # A daily source may also declare its publisher's holidays (`business_calendar`,
+        # updater/calendars.py; registry.validate allows it on cadence: daily only). No
+        # declaration: weekends only, as before.
+        eff_obs_age = (_business_age_days(newest_obs, now, e.get("business_calendar"))
+                       if cadence == "daily" else obs_age)
+        # The calendar the data clock APPLIED (None when none was): shown in the row and the table, so an
+        # OK that holds only because a holiday was deducted is never silent (review of PR #339, finding 5).
+        bcal = (e.get("business_calendar")
+                if cadence == "daily" and holiday_test(e.get("business_calendar")) is not None else None)
 
         # Discontinued series: individual series with no new obs in >2 years. These are
         # INFORMATIONAL only (old currencies like ATS/BEF/ECU, retired indicators) — a
@@ -1700,6 +1722,10 @@ def assess(store=None) -> dict:
             # does it reach". Equal for the ~70% of units that publish no forward data.
             "frontier_obs": frontier,
             "newest_obs_age_d": round(obs_age, 1) if obs_age is not None else None,
+            # The age the DATA CLOCK judged: business days (weekends and any declared holidays left out) for a
+            # daily source, calendar days otherwise - and the declared calendar it applied, if any.
+            "data_clock_age_d": round(eff_obs_age, 2) if eff_obs_age is not None else None,
+            "business_calendar": bcal,
             # Surfaced so an OK that depends on an upstream claim is never silent —
             # a reader can see WHICH claim is holding the source green, and when it
             # was last checked.
@@ -1733,6 +1759,7 @@ def assess(store=None) -> dict:
             "run_location": "unknown", "health": "ATTENTION",
             "last_success_age_d": None, "last_attempt_age_d": None,
             "newest_obs": None, "frontier_obs": None, "newest_obs_age_d": None,
+            "data_clock_age_d": None, "business_calendar": None,
             "upstream_verified": None, "n_series_tracked": 0, "n_discontinued": 0,
             "discontinued_series": [],
             "attention": [
@@ -1943,6 +1970,9 @@ def main():
         note = ""
         _rf = [x for x in (r.get("repeat_failure") or []) if x["list"] == "stuck"]
         stuck_mark = f"STUCKx{max(x['runs'] for x in _rf)} " if _rf else ""
+        if r.get("business_calendar") and r.get("data_clock_age_d") is not None:
+            # obs_age is calendar days; say which calendar the verdict used, and its business age
+            stuck_mark += f"bcal={r['business_calendar']}:{r['data_clock_age_d']:.1f}bd "
         if r["attention"]:
             note = "attn=" + ",".join(r["attention"])
         elif r["n_discontinued"]:
