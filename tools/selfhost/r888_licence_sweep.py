@@ -1105,6 +1105,35 @@ def other_handles(p: str):
     return False
 
 
+def _peak_rss_gib() -> str:
+    """The process's peak working set (Windows) or max RSS (elsewhere), for the RAM line of the VACUUM receipt."""
+    try:
+        if os.name == "nt":
+            import ctypes                                                     # noqa: PLC0415
+            from ctypes import wintypes                                       # noqa: PLC0415
+
+            class _PMC(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                            ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaNonPagedPoolUsage", ctypes.c_size_t), ("PagefileUsage", ctypes.c_size_t),
+                            ("PeakPagefileUsage", ctypes.c_size_t)]
+            pmc = _PMC()
+            pmc.cb = ctypes.sizeof(pmc)
+            k = ctypes.WinDLL("kernel32")
+            k.GetCurrentProcess.restype = wintypes.HANDLE
+            psapi = ctypes.WinDLL("psapi")
+            psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+            if psapi.GetProcessMemoryInfo(k.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb):
+                return f"{pmc.PeakWorkingSetSize / 2 ** 30:.1f} GiB"
+            return "unmeasured"
+        import resource                                                       # noqa: PLC0415
+        return f"{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2 ** 20:.1f} GiB"
+    except Exception:  # noqa: BLE001
+        return "unmeasured"
+
+
 def vacuum_preconditions(p: str) -> None:
     import shutil                                                            # noqa: PLC0415
     room = shutil.disk_usage(os.path.dirname(p)).free >= 2 * os.path.getsize(p)
@@ -1141,7 +1170,7 @@ def vacuum_core(p: str, td: str, check: str, cache_mib: int = 0) -> list:
         t_v = time.time()
         con.execute("VACUUM")
         t_v = time.time() - t_v
-        say(f"VACUUM: done  ({t_v:.1f} s)")
+        say(f"VACUUM: done  ({t_v:.1f} s; this process's peak working set {_peak_rss_gib()})")
         fl = con.execute("PRAGMA freelist_count").fetchone()[0]
     finally:
         con.close()
