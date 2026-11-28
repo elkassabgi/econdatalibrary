@@ -311,6 +311,9 @@ ORACLE_CELLS = {
     ("license", "lic-b", "reservable"): ("LIC-HELD", "held"),
     ("license", "lic-c", "attribution_required"): ("LIC-HELD", "held"),
     ("license", "lic-d", "reservable"): ("LIC-HELD", "held"),
+    # lic-n: referenced by an allowed row, its NAME names the gate. Code-review L2: the row is kept and its name
+    # withheld (equal behind the keyed stand-in), so its url difference is reconciled like any licence cell
+    ("license", "lic-n", "url"): ("LIC-HELD", "held"),
     ("source", "alpha", "name"): ("DEFAULT", "local"),
 }
 ORACLE_ROWS = {
@@ -426,7 +429,7 @@ def test_t2_to_t9_every_planted_cell_and_row_has_its_oracle_class(env):
     assert sorted(x[1] for x in w["cells"]) == ["c1src:01", "c1src:02"]           # licence cells are never written
     assert [x[1] for x in w["inserts"]] == ["sec_edgar:B"] and [x[1] for x in w["deletes"]] == ["alpha:06"]
     st = res["stats"]
-    assert st["c6_cells"] == 1 and st["c6_rows"] == 1 and st["licence_held"] == 5 and st["withheld_values"] is True
+    assert st["c6_cells"] == 1 and st["c6_rows"] == 1 and st["licence_held"] == 6 and st["withheld_values"] is True   # 6: lic-n url (L2)
 
 
 def test_t2_c7_from_queue_receipt_source_cell_and_hand_list(env):
@@ -562,7 +565,8 @@ def test_t9_licence_cells_are_held_with_direction_and_audit_line(env):
     s = rc.summarise(str(out), res, p1_c7(), {"gate_sha256": "g"}, None, allow_for(local, snaps))
     dirs = {(x["key"], x["column"]): x["direction"] for x in s["licence_held_rows"]}
     assert dirs == {("lic-a", "reservable"): "D1 tighter", ("lic-b", "reservable"): "local tighter",
-                    ("lic-c", "attribution_required"): "D1 tighter", ("lic-d", "reservable"): "undecidable"}
+                    ("lic-c", "attribution_required"): "D1 tighter", ("lic-d", "reservable"): "undecidable",
+                    ("lic-n", "url"): "licence text"}                 # lic-n: kept, its gated name withheld (L2)
     assert all(x["audit"] for x in s["licence_held_rows"])
     held = {(x["table"], x["source"], x["column"]): x for x in s["licence_held"]}
     assert held[("series", "alpha", "license_id")]["direction"] == "D1 tighter"
@@ -810,7 +814,9 @@ def test_t12_keyset_pages_with_awkward_ids_and_exact_multiples(env, monkeypatch)
     con = sqlite3.connect(snaps[rc.PRIMARY])
     assert sorted(r[0] for r in con.execute("SELECT series_id FROM series")) == sorted(ids)
     con.close()
-    assert len([c for c in fake.calls if c[0] == rc.PRIMARY and "FROM series WHERE" in c[1]]) == 3   # 3, 3, 1
+    # 3, 3, 1 and the end check after the short page (code-review M1: a short page is the end only when one PK
+    # read finds nothing after it)
+    assert len([c for c in fake.calls if c[0] == rc.PRIMARY and "FROM series WHERE" in c[1]]) == 4
     fake2 = FakeD1(tmp / "x")
     fake2.add(rc.PRIMARY, "series", [srow(i) for i in ids[:6]])
     fake2.finish()
@@ -985,13 +991,16 @@ def test_t14_the_e_refusal_touches_nothing_on_e(env, monkeypatch):
     assert not [p for p in seen if p.lower().startswith("e:")], seen
 
 
-def test_t14_classify_after_t0_needs_the_s4c_inputs(env):
+def test_t14_classify_after_t0_needs_the_s4c_inputs(env, capsys):
+    # rebuilt in the POST-flag order (code-review H1: a snapshot read before the flag is refused for its own reason)
     tmp, fake = env
     fake.finish()
     make_local(cp.BUILD_PATH, [srow("a:1")])
-    snapshot(fake, cp.BUILD_PATH, tmp / "snap")
     set_t0()
+    snapshot(fake, cp.BUILD_PATH, tmp / "snap")
+    capsys.readouterr()
     assert rc.main(["classify", "--out", str(tmp / "c"), "--snapshot-dir", str(tmp / "snap")]) == 2
+    assert "--c7-queue" in capsys.readouterr().out
 
 
 # ---- T15/T16: rehearse on a copy, apply after the flag ---------------------------------------------------------
@@ -1136,7 +1145,15 @@ def _t0_build(tmp, fake, local_rows, d1_rows):
     runs.write_text("run_key\twriter\tutc\tsources\treceipt\tgrain\tbooking\n")
     reh = tmp / "reh.json"
     reh.write_text(json.dumps({"fts_A": {"journal_peak_bytes": 0, "growth_bytes": 0}}))
-    return ["--c7-queue", str(qf), "--s4c-receipt", str(s4c), "--c7-runs", str(runs)], reh
+    return ["--c7-queue", str(qf), "--s4c-receipt", str(s4c), "--c7-runs", str(runs),
+            "--compare-to", _dry_summary(tmp)], reh
+
+
+def _dry_summary(tmp):
+    """A stand-in for the dry run's summary.json (after T0 --compare-to is required: code-review L3)."""
+    p = tmp / "dry_summary.json"
+    p.write_text(json.dumps({"per_source": {}, "classify_db": None}))
+    return str(p)
 
 
 def test_t15_apply_after_the_flag_with_the_lock_and_a_pinned_plan(env):

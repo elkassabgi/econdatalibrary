@@ -18,15 +18,20 @@ STEPS (each one a subcommand; every output goes under --out, on F:):
   rehearse      BEFORE T0 ONLY, on the plain copy: apply the plan, time the FTS rebuild (both forms), verify
   search        the 50-query search comparison: local index vs D1, and optionally vs an origin copy
   apply         S11 ONLY, after the CUTOVER flag, under the writer lock: apply EXACTLY the pinned plan
-                (--plan + --plan-sha), rebuild series_fts, verify V1-V5 (V6 = search, V7 = the C6 count)
+                (--plan + --plan-sha), rebuild series_fts, verify V1-V5 (V6 = search, V7 = the C6 count) - the
+                writes, the FTS rebuild and verify in ONE transaction, so a stop leaves the build unchanged
   c7-candidates list the booking lines (FINISH_PLAN.md, NUMBERS.md) that may name a catalogue writer run
 
 THE ALLOW-LIST (coordinator ruling on H1/H2; AR-264 / R1492 rule 2): the tool may handle only the sources the
 LOCAL catalogue hosts (its series and source rows) plus the named C3 writer sources, minus the worker gate
 (core.gen_denylist.committed_gate). Every table is gated: a series row by its id prefix AND its source_id, a
-source row by its id, a licence row only when an allowed series/source row references it and no gated id appears
-in it. Anything else is dropped ON RECEIPT, before validation or storage, and reported only as a YES/NO line -
+source row by its id, a licence row only when an allowed series/source row references it and its id names no
+gated id. Anything else is dropped ON RECEIPT, before validation or storage, and reported only as a YES/NO line -
 never a name, a key or a count (R888). Messages print a key's sha256 prefix, never the key.
+A HOSTED KEY IS NOT A MENTION (coordinator ruling on code-review H2, 2026-11-28): the gated-token rule never
+applies to the key columns of an admitted row (series.series_id / series.source_id, source.source_id); it applies
+to non-key text cells, whose values are replaced in the snapshot by a keyed digest (WITHHELD + HMAC), so equal
+values still compare equal and no gated text is stored.
 
 CLASSES (b2), first match wins:
   cells: LIC-HELD (any licence / redistributability cell: never applied in either direction, listed with its
@@ -61,8 +66,10 @@ import argparse
 import datetime as dt
 import decimal
 import hashlib
+import hmac
 import json
 import math
+import ntpath
 import os
 import pathlib
 import re
@@ -90,6 +97,13 @@ JSON_COLUMNS = frozenset({("series", "metadata")})
 LICENCE_FLAGS = ("reservable", "commercial_ok", "attribution_required", "no_modify")
 PERMISSION_FLAGS = frozenset({"reservable", "commercial_ok"})
 LICENCE_REFS = frozenset({("series", "license_id"), ("source", "license_id")})
+# Coordinator ruling 2026-11-28 (code-review L7): source.attribution and source.terms_url are served licence-
+# condition text (attribution limbs, prescribed forms) and are HELD like the licence cells, never DEFAULT.
+LICENCE_TEXT = frozenset({("source", "attribution"), ("source", "terms_url")})
+HELD_CELLS = LICENCE_REFS | LICENCE_TEXT
+# The key columns of an admitted row: the gated-token rule never applies to them (code-review H2 ruling).
+KEY_COLS = {"series": frozenset({"series_id", "source_id"}), "source": frozenset({"source_id"}),
+            "license": frozenset({"license_id"})}
 C6_SOURCE = "sec_edgar"
 # Ruling (k) + coordinator 2026-11-28 (Q3): the first FAILING sync (.github/workflows/updater-daily.yml:431,
 # "Every catalogue sync since that commit has FATAL'd"; R542). The per-workflow freeze dates were 2026-08-31
@@ -105,6 +119,17 @@ WRITE_CHUNK = 400
 SEARCH_LOCAL_MAX = 2_000                                # a query with more local matches is refused (cost)
 SMALL_EXPECTED = 5_000                                  # the budget check's guess for one small-table statement
 JS_SAFE_INT = 2 ** 53                                   # the D1 answer is JSON from a JS runtime (review M3)
+# A D1 error on a page (code-review L1): an answer-size error halves the page; a transient one (HTTP 429/5xx, a
+# network error) retries THE SAME page after these pauses; anything else stops the read. The error's text is
+# matched, never printed (it may echo a key).
+RETRY_SLEEPS = (1.0, 4.0, 15.0)
+_SIZE_ERROR_RX = re.compile(r"HTTP 413\b|too large|too big|toobig|exceed|response size|payload", re.I)
+_TRANSIENT_RX = re.compile(r"HTTP (429|5\d\d)\b")
+# Stored snapshot rows vs D1's own source_counts over the allowed sources (code-review M1): a shortfall above this
+# FAILS classify. source_counts drifts (R489: e.g. 23 rows on sec_edgar, a 1,157-row phantom), so the tolerance is
+# max(10,000 rows, 0.1 %) - far below what a truncated read loses, far above the drift seen.
+COUNT_TOL_ROWS = 10_000
+COUNT_TOL_FRAC = 0.001
 # PRAGMA synchronous for the tool's OWN files (snapshots, budget ledger, result file). NORMAL survives a killed
 # process (each page transaction is atomic); tests set OFF to spare the disk's fsyncs.
 OWN_SYNC = "NORMAL"
@@ -134,7 +159,10 @@ SEARCH_SQL = ("SELECT f.series_id AS series_id, f.title AS fts_title, f.geograph
               " s.geography AS series_geo FROM series_fts f JOIN series s ON s.series_id = f.series_id"
               " WHERE series_fts MATCH ?")
 
-WITHHELD = b"\x00withheld-by-the-allow-list\x00"           # stands in, in a snapshot, for a value naming a gated id
+# Stands in, in a snapshot, for a non-key value naming a gated id: the marker + HMAC-SHA256(salt, value), the salt
+# a random per-snapshot key in its _state. No gated text is stored, and an EQUAL local value still compares equal
+# (a hosted sec_edgar title that holds a gated token must not read as a V7 difference).
+WITHHELD = b"\x00withheld-by-the-allow-list\x00"
 RAW, NORM, DIFF = "raw", "norm", "diff"
 LOCAL, TAKE_D1, VERIFY, HELD = "local", "d1", "verify", "held"
 CELL_CLASSES = ("LIC-HELD", "ROUNDTRIP", "C7", "C5", "C2", "C6", "C1", "C1-GAP", "LOCAL-NULL", "DEFAULT")
@@ -221,6 +249,35 @@ def _text_or_bytes(b: bytes):
         return bytes(b)
 
 
+def _is_withheld(v) -> bool:
+    return isinstance(v, (bytes, bytearray)) and bytes(v).startswith(WITHHELD)
+
+
+def _value_bytes(v) -> bytes | None:
+    if v is None:
+        return None
+    if isinstance(v, (bytes, bytearray)):
+        return bytes(v)
+    if isinstance(v, str):
+        return v.encode("utf-8", "surrogatepass")
+    return str(v).encode("utf-8")
+
+
+def withheld_value(salt_hex: str | None, v) -> bytes:
+    """The stored stand-in for a value naming a gated id. Without a salt the digest is all zeros (never equal)."""
+    b = _value_bytes(v)
+    if not salt_hex or b is None:
+        return WITHHELD + bytes(32)
+    return WITHHELD + hmac.new(bytes.fromhex(salt_hex), b, hashlib.sha256).digest()
+
+
+def withheld_equal(salt_hex: str | None, marker, local_value) -> bool:
+    """Does the local value equal the D1 value the marker stands in for (byte for byte)?"""
+    if not salt_hex or local_value is None or not _is_withheld(marker):
+        return False
+    return hmac.compare_digest(bytes(marker), withheld_value(salt_hex, local_value))
+
+
 # ---- path guards (review M7: string tests for E:, a volume test for F:, never a stat of E:'s data/) --------
 
 def _abs(p) -> str:
@@ -236,17 +293,43 @@ def _is_under(p, root) -> bool:
     return rp == rr or rp.startswith(rr + os.sep)
 
 
+_WIN_DRIVE_RX = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _win_form(p) -> str | None:
+    """The path as a normalised WINDOWS path when it is one: on Windows every path (made absolute); on any other OS
+    a path spelled with a drive letter (`E:\\x`, `F:/y`). None for a POSIX path on POSIX. Decided with ntpath on
+    every OS, so the guards mean the same on CI's Linux runner as on the desktop (code-review M6)."""
+    s = os.fspath(p)
+    if os.name == "nt":
+        return ntpath.normcase(ntpath.normpath(os.path.abspath(s)))
+    if _WIN_DRIVE_RX.match(s):
+        return ntpath.normcase(ntpath.normpath(s))
+    return None
+
+
+def _drive_of(p) -> str | None:
+    w = _win_form(p)
+    return ntpath.splitdrive(w)[0].upper() if w is not None else None
+
+
 def _under_e_repo(p) -> bool:
     """String tests only: the E: repository is never stat-ed or resolved by this check."""
-    e_root = _abs(catalog_path.LIVE_STORE_ROOT).rstrip("\\/")
-    q = _abs(p)
-    if q == e_root or q.startswith(e_root + os.sep):
-        return True                                          # the spelled path: never resolved, never stat-ed
-    if os.path.splitdrive(q)[0] == os.path.splitdrive(e_root)[0]:
-        return False                                         # another E: path: not resolved either (no E: access);
+    e_root = _win_form(catalog_path.LIVE_STORE_ROOT)
+    q = _win_form(p)
+    if e_root is not None and q is not None:
+        e_root = e_root.rstrip("\\")
+        if q == e_root or q.startswith(e_root + "\\"):
+            return True                                      # the spelled path: never resolved, never stat-ed
+        if ntpath.splitdrive(q)[0] == ntpath.splitdrive(e_root)[0]:
+            return False                                     # another E: path: not resolved either (no E: access);
                                                              # it then fails the F: volume test
-    q = _real(p)                                             # an F: path: resolved, so a junction to E: is seen
-    return q == e_root or q.startswith(e_root + os.sep)
+        if os.name != "nt":
+            return False                                     # another drive letter spelled on POSIX: no such file
+    if os.name != "nt":
+        return False                                         # a POSIX path cannot lie under a Windows drive path
+    rq = ntpath.normcase(os.path.realpath(os.fspath(p)))     # an F: path: resolved, so a junction to E: is seen
+    return rq == e_root or rq.startswith(e_root + "\\")
 
 
 def _volume(p) -> int:
@@ -260,8 +343,7 @@ def _volume(p) -> int:
 
 
 def _on_f(p) -> bool:
-    if os.path.splitdrive(os.path.abspath(os.fspath(p)))[0].lower() != \
-            os.path.splitdrive(os.path.abspath(F_ANCHOR))[0].lower():
+    if _drive_of(p) != _drive_of(F_ANCHOR):
         return False                                              # another drive: not stat-ed at all
     try:
         return _volume(p) == os.stat(F_ANCHOR).st_dev
@@ -741,10 +823,15 @@ def load_queue(c7: C7, queue: str, s4c_receipt: str | None) -> dict:
 
 # ---- the allow-list (coordinator ruling on H1/H2) --------------------------------------------------------------
 
+def _is_c6_row(key, row: dict | None) -> bool:
+    """A sec_edgar series row by its id prefix OR its source_id - what V7 must count whatever the gate says."""
+    return (isinstance(key, str) and key.split(":", 1)[0] == C6_SOURCE) or (row or {}).get("source_id") == C6_SOURCE
+
+
 class Allow:
     """What the tool may handle. Built from the LOCAL catalogue: its series and source sources plus the named C3
     sources, minus the gate; the licences those rows reference (on either side, added as D1 rows are admitted)
-    and in which no gated id appears."""
+    and whose id names no gated id."""
 
     def __init__(self, sources: set, gate: set, licence_refs: set):
         self.gate = {g.lower() for g in gate if g}
@@ -764,24 +851,33 @@ class Allow:
             return False
         return any(isinstance(t, str) and self._rx.search(t) for t in texts)
 
-    def row_names_gated(self, row: dict | None) -> bool:
-        return bool(row) and (any(v == WITHHELD for v in row.values())
-                              or self.names_gated(*[v for v in row.values() if isinstance(v, str)]))
+    def row_names_gated(self, row: dict | None, table: str | None = None) -> bool:
+        """Does a NON-KEY value of the row name a gated id (or stand in for one)? With `table`, the row's key
+        columns are not looked at: a hosted key is not a mention (code-review H2 ruling)."""
+        if not row:
+            return False
+        keys = KEY_COLS.get(table, frozenset()) if table else frozenset()
+        vals = [v for k, v in row.items() if k not in keys]
+        return any(_is_withheld(v) for v in vals) or self.names_gated(*[v for v in vals if isinstance(v, str)])
 
-    def redact(self, table: str, row: dict) -> tuple[dict, bool]:
-        """A D1 row as it may be STORED: every non-key value in which a gated id appears is replaced by WITHHELD
-        (a value D1's JSON answer can never carry), so no snapshot file holds the text (R888)."""
+    def redact(self, table: str, row: dict, salt: str | None = None) -> tuple[dict, bool]:
+        """A D1 row as it may be STORED: every NON-KEY text value in which a gated id appears is replaced by its
+        keyed stand-in (withheld_value - a bytes value D1's JSON answer can never carry), so no snapshot file holds
+        the text (R888) and an equal local value still compares equal."""
         out, hit = {}, False
+        keys = KEY_COLS[table]
         for k, v in row.items():
-            if k != PK[table] and isinstance(v, str) and self.names_gated(v):
-                out[k], hit = WITHHELD, True
+            if k not in keys and isinstance(v, str) and self.names_gated(v):
+                out[k], hit = withheld_value(salt, v), True
             else:
                 out[k] = v
         return out, hit
 
     def series(self, row: dict) -> bool:
+        """Admitted when its id prefix AND its source_id are allowed sources - whatever tokens the id holds (a
+        hosted key is not a mention: coordinator ruling on code-review H2)."""
         sid = row.get("series_id")
-        if not isinstance(sid, str) or ":" not in sid or self.names_gated(sid):
+        if not isinstance(sid, str) or ":" not in sid:
             return False
         if sid.split(":", 1)[0] not in self.sources:
             return False
@@ -792,8 +888,10 @@ class Allow:
         return row.get("source_id") in self.sources
 
     def licence(self, row: dict) -> bool:
+        """Referenced by an allowed row, and its id names no gated id. Its name/url text naming one is REDACTED on
+        receipt like any non-key cell (not a reason to drop the row: code-review L2)."""
         lid = row.get("license_id")
-        return lid in self.licence_refs and not self.names_gated(lid, row.get("name"), row.get("url"))
+        return lid in self.licence_refs and not self.names_gated(lid)
 
     def admit(self, table: str, row: dict) -> bool:
         return {"series": self.series, "source": self.source, "license": self.licence}[table](row)
@@ -901,7 +999,13 @@ def d1(budget: Budget, db: str, sql: str, params: list, expected: int, what: str
         raise Refused(f"refused before sending: not one plain read ({why})")
     budget.check(expected, what)
     t = time.monotonic()
-    res = _query_fn()(db, sql, list(params))
+    try:
+        res = _query_fn()(db, sql, list(params))
+    except Exception:
+        # D1 may bill rows it read before the error: charge the statement's expected rows as an upper estimate
+        # (code-review L11), then let the caller decide (retry, halve, or stop)
+        budget.charge(int(expected), db, f"{what} (failed; its expected rows charged as an upper estimate)")
+        raise
     secs = time.monotonic() - t
     meta = (res or {}).get("meta") if isinstance(res, dict) else None
     rr = (meta or {}).get("rows_read")
@@ -1059,11 +1163,30 @@ def _check_types(table: str, row: dict, decl: dict) -> None:
             raise Stop(f"STOP: D1 returned a {type(v).__name__} in the TEXT column {table}.{c} of {h(row.get(PK[table]))}")
 
 
-def read_db_main(budget: Budget, db: str, snap_path: str, page_rows: int, allow: Allow, probe_e: int | None) -> dict:
+def _d1_error_kind(e: BaseException) -> str:
+    """'size' (an answer too large: halve the page), 'transient' (retry the same page) or 'other' (stop). Decided
+    from the error's text, which is never printed (code-review L1)."""
+    if isinstance(e, OSError):
+        return "transient"                                              # a network error or a timeout
+    text = str(e)
+    if _SIZE_ERROR_RX.search(text):
+        return "size"
+    if _TRANSIENT_RX.search(text):
+        return "transient"
+    return "other"
+
+
+def read_db_main(budget: Budget, db: str, snap_path: str, page_rows: int, allow: Allow, probe_e: int | None,
+                 reproject=None) -> dict:
     """Schema, other tables, series pages and the source table of ONE database. Every row is ADMITTED on receipt
     (allow-list) before any check that could print it; only admitted rows are stored. One transaction per page
     stores the page's admitted rows AND the cursor (the last ADMITTED key) - a resume re-reads at most the dropped
-    tail. No per-page row counts are stored (review M1)."""
+    tail. No per-page row counts are stored (review M1).
+    Code review 2026-11-28: the snapshot records when it was read and on which side of the CUTOVER flag (H1); a
+    short page is the end only when a confirming read finds nothing after it (M1); the stored rows are compared
+    with D1's own source_counts over the allowed sources (M1); page 1 of a NEW snapshot is always measured - against
+    the probe's e, or, with no probe, re-projected before page 2 (M4); a transient error retries the same page, and
+    only an answer-size error halves it (L1)."""
     con = _snap_connect(snap_path)
     try:
         if _state_get(con, "allow_list_sha256") not in (None, allow.digest()):
@@ -1077,6 +1200,13 @@ def read_db_main(budget: Budget, db: str, snap_path: str, page_rows: int, allow:
                                 [(m.get("type"), m.get("name"), m.get("tbl_name"), m.get("sql")) for m in master])
                 _state_set(con, "allow_list_sha256", allow.digest())
                 _state_set(con, "dropped_master", bool(dropped))
+                _state_set(con, "read_started_utc", utcnow())
+                _state_set(con, "cut_over_at_start", cutover.is_cut_over())
+                _state_set(con, "withheld_salt", os.urandom(16).hex())
+        elif bool(_state_get(con, "cut_over_at_start")) != cutover.is_cut_over():
+            raise Refused("refused: this snapshot was started on the other side of the CUTOVER flag; a read is never "
+                          "resumed across T0 - start a new --out")
+        salt = _state_get(con, "withheld_salt")
         types = replay_types(master)
         for t, cols in types.items():
             _create_untyped(con, t, [c for c, _ in cols])
@@ -1102,39 +1232,60 @@ def read_db_main(budget: Budget, db: str, snap_path: str, page_rows: int, allow:
             cursor = _state_get(con, "series_cursor")                   # the last ADMITTED key stored
             page_no = _state_get(con, "series_pages", 0)
             stored = _state_get(con, "series_stored", 0)
-            first_in_run, p = True, page_rows
+            fresh = page_no == 0                                        # page 1 of a NEW snapshot is measured
+            p, tries = page_rows, 0
             raw_last = cursor
             while True:
                 sql, params = (PAGE_SQL_FIRST, ["", p]) if raw_last is None else (PAGE_SQL, [raw_last, p])
                 try:
                     rows, rr, secs = d1(budget, db, sql, params, p + max(probe_e or 1, 0) + 1,
                                         f"{db} series page {page_no + 1}")
-                except RuntimeError:                                    # an answer too large: halve P (review L5)
-                    if p // 2 < MIN_PAGE_ROWS:
-                        raise
-                    p //= 2
-                    _state_set(con, "page_rows_halved", True)
-                    con.commit()
-                    continue
+                except (RuntimeError, OSError) as e:
+                    kind = _d1_error_kind(e)
+                    if kind == "transient" and tries < len(RETRY_SLEEPS):
+                        time.sleep(RETRY_SLEEPS[tries])
+                        tries += 1
+                        with con:
+                            _state_set(con, "transient_retries", int(_state_get(con, "transient_retries", 0)) + 1)
+                        continue
+                    if kind == "size" and p // 2 >= MIN_PAGE_ROWS:
+                        p //= 2
+                        with con:
+                            _state_set(con, "page_rows_halved", True)
+                            _state_set(con, "page_rows_halved_reason", "an answer-size error")
+                        continue
+                    raise
+                tries = 0
                 prev = raw_last
                 for i, r in enumerate(rows):                            # order over ALL rows; messages hold no key
                     sid = r.get("series_id")
                     if not isinstance(sid, str) or (prev is not None and not sid > prev):
                         raise Stop(f"STOP: {db} page {page_no + 1} is not strictly increasing at position {i}")
                     prev = sid
-                keep, redacted = [], False
+                keep, redacted, c6_dropped = [], False, False
                 for r in rows:
                     if not allow.series(r):
+                        c6_dropped = c6_dropped or _is_c6_row(r.get("series_id"), r)
                         continue
                     if set(r) - set(cols):
                         raise Stop(f"STOP: {db} returned series columns its schema lacks")
                     _check_types("series", r, decl)
-                    r2, hit = allow.redact("series", r)
+                    r2, hit = allow.redact("series", r, salt)
                     keep.append(r2)
                     redacted = redacted or hit
+                end = len(rows) < p
+                if end and rows:
+                    # a SHORT, non-empty page is the end only when nothing follows it (code-review M1): one cheap PK
+                    # read; a row after it means the answer was cut short, and the read goes on from its last key
+                    after, _, _ = d1(budget, db, PAGE_SQL, [rows[-1]["series_id"], 1], 1 + max(probe_e or 1, 0) + 1,
+                                     f"{db} series end check")
+                    if after:
+                        end = False
                 with con:
                     if redacted:
                         _state_set(con, "redacted_values", True)
+                    if c6_dropped:
+                        _state_set(con, "c6_dropped_on_receipt", True)  # V7 must fail: a sec_edgar row unseen
                     con.executemany(f'INSERT INTO "series" VALUES ({",".join("?" * len(cols))})',
                                     [[_snapval(r.get(c)) for c in cols] for r in keep])
                     page_no += 1
@@ -1147,22 +1298,40 @@ def read_db_main(budget: Budget, db: str, snap_path: str, page_rows: int, allow:
                         _state_set(con, "series_cursor", keep[-1]["series_id"])
                     if len(keep) != len(rows):
                         _state_set(con, "dropped_series", True)
-                    if len(rows) < p:
+                    if len(rows) < p and not end:
+                        _state_set(con, "short_page_seen", True)
+                    if end:
                         _state_set(con, "series_done", True)
-                if first_in_run and probe_e is not None and len(rows) == p and abs((rr - len(rows)) - probe_e) > 1:
-                    raise Stop(f"STOP after {db} page {page_no}: rows_read per page differs from the probe's e by "
-                               f"more than 1 - re-project before reading on (--resume)")
-                first_in_run = False
-                if len(rows) < p:
+                    if fresh:
+                        _state_set(con, "e_measured", rr - len(rows))
+                if fresh:
+                    fresh = False
+                    e_meas = rr - len(rows)
+                    if probe_e is not None and len(rows) == p and abs(e_meas - probe_e) > 1:
+                        raise Stop(f"STOP after {db} page {page_no}: rows_read per page differs from the probe's e by "
+                                   f"more than 1 - re-probe, then resume (a resume does not re-check page 1)")
+                    if probe_e is None and reproject is not None:
+                        reproject(db, e_meas)                           # Stop when the measured e breaks the budget
+                if end:
                     break
-                raw_last = rows[-1]["series_id"]                        # in memory only; never stored or printed
+                if rows:
+                    raw_last = rows[-1]["series_id"]                    # in memory only; never stored or printed
+        if "series" in types and _state_get(con, "series_done", False) and \
+                _state_get(con, "series_expected_done") is None:
+            try:
+                n = allowed_count(budget, db, allow)                    # allowed sources only: no gated count
+            except RuntimeError:
+                n = None                                                # not measured = a FAILED check in classify
+            with con:
+                _state_set(con, "series_expected_by_source_counts", n)
+                _state_set(con, "series_expected_done", True)
         if "source" in types and _state_get(con, "source_done") is None:
             rows, rr, secs = d1(budget, db, "SELECT * FROM source", [], SMALL_EXPECTED, f"{db} source")
             keep, redacted = [], False
             for r in rows:
                 if allow.source(r):
                     _check_types("source", r, dict(types["source"]))
-                    r2, hit = allow.redact("source", r)
+                    r2, hit = allow.redact("source", r, salt)
                     keep.append(r2)
                     redacted = redacted or hit
             cols = [c for c, _ in types["source"]]
@@ -1202,16 +1371,27 @@ def d1_licence_refs(snap_path: str) -> set:
 
 def read_db_licence(budget: Budget, db: str, snap_path: str, allow: Allow) -> None:
     """The licence table, after BOTH databases' series and source rows are stored: a licence row is admitted only
-    when an allowed row (local or D1) references it and no gated id appears in it (review H1)."""
+    when an allowed row (local or D1) references it and its id names no gated id (review H1); its name/url text is
+    redacted like any non-key cell (code-review L2: a licence on BOTH sides whose D1 text names a gated id is not
+    dropped, so the local row is not misread as 'only local'). The snapshot is then marked COMPLETE, with the end
+    time and the side of the CUTOVER flag it ended on (code-review H1)."""
     con = _snap_connect(snap_path)
     try:
         master = [dict(zip(("type", "name", "tbl_name", "sql"), r)) for r in con.execute("SELECT * FROM _master")]
         types = replay_types(master)
+        salt = _state_get(con, "withheld_salt")
         if "license" in types and _state_get(con, "license_done") is None:
             rows, rr, secs = d1(budget, db, "SELECT * FROM license", [], SMALL_EXPECTED, f"{db} license")
-            keep = [r for r in rows if allow.licence(r)]
+            keep, redacted = [], False
+            for r in rows:
+                if allow.licence(r):
+                    r2, hit = allow.redact("license", r, salt)
+                    keep.append(r2)
+                    redacted = redacted or hit
             cols = [c for c, _ in types["license"]]
             with con:
+                if redacted:
+                    _state_set(con, "redacted_values", True)
                 con.executemany(f'INSERT OR REPLACE INTO "license" VALUES ({",".join("?" * len(cols))})',
                                 [[_snapval(r.get(c)) for c in cols] for r in keep])
                 con.execute("INSERT INTO _pages VALUES(?,?,?,?,?,?,?)", (db, "license", 0, rr, round(secs, 3), None,
@@ -1229,14 +1409,24 @@ def read_db_licence(budget: Budget, db: str, snap_path: str, allow: Allow) -> No
                         con.execute(f'INSERT INTO _colstats SELECT ?, {src}, ?, COUNT(*), COUNT("{c}") '
                                     f'FROM "{t}" GROUP BY {src}', (t, c))
                 _state_set(con, "colstats_done", True)
+        if _state_get(con, "read_complete") is None:
+            need = [k for k, t in (("series_done", "series"), ("source_done", "source"), ("license_done", "license"),
+                                   ("series_count_checked", "series"), ("series_expected_done", "series"))
+                    if t in types]
+            if all(_state_get(con, k) for k in need + ["others_done", "colstats_done"]):
+                with con:
+                    _state_set(con, "read_ended_utc", utcnow())
+                    _state_set(con, "cut_over_at_end", cutover.is_cut_over())
+                    _state_set(con, "read_complete", True)
     finally:
         con.close()
 
 
-def snapshot_d1(budget: Budget, out: str, page_rows: int, allow: Allow, probe: dict | None) -> dict:
+def snapshot_d1(budget: Budget, out: str, page_rows: int, allow: Allow, probe: dict | None, reproject=None) -> dict:
     paths = {db: os.path.join(out, f"d1_{db}.sqlite") for db in DATABASES}
     for db in DATABASES:
-        read_db_main(budget, db, paths[db], page_rows, allow, (probe["databases"][db]["e"] if probe else None))
+        read_db_main(budget, db, paths[db], page_rows, allow, (probe["databases"][db]["e"] if probe else None),
+                     reproject)
     refs = set(allow.licence_refs)
     for db in DATABASES:
         refs |= d1_licence_refs(paths[db])
@@ -1244,6 +1434,58 @@ def snapshot_d1(budget: Budget, out: str, page_rows: int, allow: Allow, probe: d
     for db in DATABASES:
         read_db_licence(budget, db, paths[db], allow)
     return paths
+
+
+SNAPSHOT_STATE_KEYS = ("read_started_utc", "read_ended_utc", "cut_over_at_start", "cut_over_at_end", "read_complete",
+                       "series_stored", "series_expected_by_source_counts", "c6_dropped_on_receipt", "withheld_salt",
+                       "allow_list_sha256", "short_page_seen", "transient_retries", "page_rows_halved", "e_measured")
+
+
+def snapshot_state(path: str) -> dict:
+    """The _state of one of the tool's own snapshots, read-only (an absent file or table reads as {})."""
+    if not os.path.isfile(path):
+        return {}
+    con = sqlite3.connect(ro_uri(path), uri=True)  # plain-open: the tool's own snapshot, read-only
+    try:
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE name='_state'").fetchone():
+            return {}
+        return {k: json.loads(v) for k, v in con.execute("SELECT k, v FROM _state")}
+    finally:
+        con.close()
+
+
+def check_snapshots_for_use(snapshots: dict) -> dict:
+    """Before classify (and again at apply): every snapshot COMPLETE; after T0 every one read WHOLLY after the
+    CUTOVER flag (S11 'a fresh D1 read'; code-review H1). Returns {db: the recorded read times and flags}."""
+    out = {}
+    for db, p in snapshots.items():
+        st = snapshot_state(p)
+        if not st.get("read_complete"):
+            raise Refused(f"refused: the {db} snapshot is not complete (read-d1 did not finish it) - resume read-d1")
+        if cutover.is_cut_over() and not (st.get("cut_over_at_start") is True and st.get("cut_over_at_end") is True):
+            raise Refused(f"refused: after T0 the {db} D1 snapshot must be read wholly AFTER the CUTOVER flag (S11 "
+                          f"needs a fresh D1 read); this one was not - run read-d1 into a new --out")
+        out[db] = {k: st.get(k) for k in ("read_started_utc", "read_ended_utc", "cut_over_at_start",
+                                          "cut_over_at_end")}
+    return out
+
+
+def snapshot_count_check(snapshots: dict) -> dict:
+    """Stored (allowed) series rows vs D1's own source_counts summed over the allowed sources, per database
+    (code-review M1). Not measured is a failure; a shortfall above max(COUNT_TOL_ROWS, COUNT_TOL_FRAC) is one."""
+    out = {}
+    for db, p in snapshots.items():
+        st = snapshot_state(p)
+        stored, exp = st.get("series_stored"), st.get("series_expected_by_source_counts")
+        if exp is None or stored is None:
+            out[db] = {"stored": stored, "source_counts": exp, "ok": False,
+                       "why": "not measured (no source_counts answer, or no series table)"}
+            continue
+        tol = max(COUNT_TOL_ROWS, int(COUNT_TOL_FRAC * int(exp)))
+        short = int(exp) - int(stored)
+        out[db] = {"stored": int(stored), "source_counts": int(exp), "shortfall": short, "tolerance": tol,
+                   "ok": short <= tol}
+    return out
 
 
 def dropped_flags(paths: dict) -> dict:
@@ -1272,19 +1514,25 @@ def cmd_read_d1(a) -> int:
     if a.probe:
         with open(guard_input(a.probe, "--probe"), encoding="utf-8") as fh:
             probe = json.load(fh)
+        if probe.get("allow_list_sha256") != allow.digest():
+            raise Refused("refused: the probe was made with a different allow-list - probe again")
     res = {"step": "read-d1", "utc_start": utcnow(), "page_rows": a.page_rows, "allow_list_sha256": allow.digest()}
-    resuming = budget.statements > 0
+    # A RESUME is a snapshot this --out already started - never "some statement in the shared budget ledger" (a
+    # probe in the same --out is not a read; code-review M4)
+    resuming = any(snapshot_state(os.path.join(out, f"d1_{db}.sqlite")).get("read_started_utc") for db in DATABASES)
+    reproject = None
     if not resuming:
         ns = {}
         for db in DATABASES:
+            n = probe["databases"][db].get("allowed_rows_by_source_counts") if probe else None
+            if n is not None:
+                ns[db] = int(n)                                         # the probe measured it: no statement here
+                continue
             try:
                 ns[db] = allowed_count(budget, db, allow)
             except RuntimeError:
-                n = probe["databases"][db].get("allowed_rows_by_source_counts") if probe else None
-                if n is None:
-                    raise Refused(f"refused: {db} has no readable source_counts and no probe N - cannot project") \
-                        from None
-                ns[db] = int(n)
+                raise Refused(f"refused: {db} has no readable source_counts and no probe N - cannot project") \
+                    from None
         e = {db: (probe["databases"][db]["e"] if probe else 1) for db in DATABASES}
         r_proj = projection(ns, a.page_rows, e, 8_000, 0)
         res["projection"] = {"N_allowed": ns, "e": e, "P": a.page_rows, "R_total": r_proj,
@@ -1292,10 +1540,22 @@ def cmd_read_d1(a) -> int:
         say(f"read-d1: projected {r_proj:,} rows read (allowed N {ns}, P {a.page_rows}, e {e}); budget {budget.limit:,}")
         if r_proj + budget.spent > budget.limit:
             raise Refused(f"refused: the projection {r_proj:,} is above --budget-rows {budget.limit:,}")
+        if not probe:
+            # no probe: page 1 of each database is MEASURED and the total re-projected before page 2 (code-review M4)
+            spent0 = budget.spent
+
+            def reproject(db, e_db):
+                e[db] = max(int(e_db), 0)
+                r = projection(ns, a.page_rows, e, 8_000, 0)
+                res["projection"]["e"], res["projection"]["R_total_after_page_1"] = dict(e), r
+                say(f"read-d1: {db} page 1 measured e {e[db]}; re-projected {r:,} rows")
+                if r + spent0 > budget.limit:
+                    raise Stop(f"STOP after {db} page 1: the measured e makes the projection {r:,} exceed "
+                               f"--budget-rows {budget.limit:,} - re-project with a probe, then resume")
     else:
         say(f"read-d1: resuming; {budget.spent:,} rows already read by earlier runs count against the budget")
     try:
-        paths = snapshot_d1(budget, out, a.page_rows, allow, probe)
+        paths = snapshot_d1(budget, out, a.page_rows, allow, probe, reproject)
         res["outside_the_allow_list_dropped"] = dropped_flags(paths)
     finally:
         res.update(rows_read_total=budget.spent, statements=budget.statements, utc_end=utcnow())
@@ -1532,6 +1792,7 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
     for db, sc in snaps.items():
         if sc is not None and _state_get(sc, "allow_list_sha256") != allow.digest():
             raise Refused(f"refused: the {db} snapshot was made with a different allow-list (re-read D1)")
+    salts = {db: (_state_get(sc, "withheld_salt") if sc is not None else None) for db, sc in snaps.items()}
     o = Out(os.path.join(out_dir, "classify.sqlite"))
     dig_before, dig_after = Digests(), Digests()
     plan = {"cells": [], "inserts": [], "deletes": []}
@@ -1539,7 +1800,11 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
              "c6_cells": 0, "c6_rows": 0, "c3_served": 0, "c3_local_removal": 0, "c3_parent_missing": 0,
              "del_both": 0, "del_withheld": False, "licence_held": 0, "roundtrip": 0, "local_invalid_utf8": 0,
              "withheld_values": False, "licence_rows_held": 0, "d1_only_licence_dropped": False,
-             "licence_take_refused": 0}
+             "licence_take_refused": 0, "c6_withheld": False, "del_outside_allow": False, "equal_withheld": 0}
+    # V7 must see every sec_edgar row (code-review H2): one dropped on receipt by read-d1 is a YES that fails V7
+    for sc in snaps.values():
+        if sc is not None and _state_get(sc, "c6_dropped_on_receipt", False):
+            stats["c6_withheld"] = True
     # S4d (B32, T0 plan rev 6.5) deletes every UNREFERENCED local licence row before S5, so D1 may hold licence
     # rows the build no longer has. Such a D1-only licence row is NEVER inserted by this tool: it is listed in the
     # held licence class (LIC-HELD-ROW, owner item 36) only when an allowed row that EXISTS AFTER the reconcile
@@ -1592,10 +1857,18 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                     if t == "series":
                         streamed += 1
                 # THE GATE FIRST (review M1): a local row outside the allow-list is not compared, and the snapshot
-                # holds only admitted rows; MISPLACED is decided after this line
+                # holds only admitted rows; MISPLACED is decided after this line. Before the drop, the two counters
+                # that must see EVERY row do (code-review H2, M2): V7 (a sec_edgar row) and ruling (l)'s item-17
+                # FAILED check (an approved id still present) - each a YES/NO, no key printed.
                 if l is not None and not allow.admit(t, l):
+                    if t == "series" and _is_c6_row(key, l):
+                        stats["c6_withheld"] = True
+                    if t == "series" and key in deletes:
+                        stats["del_withheld"] = True
+                        stats["del_outside_allow"] = True
                     dig_after.add("_withheld", lcols, l)
                     continue
+                other = None
                 if t == "series":
                     s = (l or p or c).get("source_id")
                     home = shard.get(s, PRIMARY)
@@ -1608,20 +1881,23 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                 else:
                     s = key if t == "source" else None
                     d, d_db = (p, PRIMARY) if p is not None else (c, CLIMATE)
-                    if p is not None and c is not None and any(compare("text", p.get(x), c.get(x)) == DIFF for x in p):
+                    if p is not None and c is not None and any(
+                            not _is_withheld(p.get(x)) and not _is_withheld(c.get(x))
+                            and compare("text", p.get(x), c.get(x)) == DIFF for x in p):
                         stats["shard_copy_differs"] += 1
                 if l is None and d is None:
                     continue                                        # only in the wrong database: listed above
                 if t == "series" and l is not None:
                     stats["series_rows_local_allowed"] += 1
-                if t == "series" and key in deletes and l is not None and d is not None:
+                if t == "series" and key in deletes and l is not None and (d is not None or other is not None):
+                    # on both sides - in its home database OR misplaced in the other one (code-review M2)
                     stats["del_both"] += 1                           # review M9: B31 incomplete - a FAILED check
                     o.row(t, key, s, "C4-DEL-BOTH", "failed", "{}", None, d_db)
                     o.count(t, s, None, "rows_C4-DEL-BOTH")
                     keep_after(t, l, lcols)
                     continue
                 if l is not None and d is None:
-                    if t == "series" and key in deletes and allow.row_names_gated(l):
+                    if t == "series" and key in deletes and allow.row_names_gated(l, t):
                         stats["del_withheld"] = True                 # cannot be planned without its values: FAILED
                         stats["withheld_values"] = True
                         o.row(t, key, s, "C4-DEL-WITHHELD", "failed", "{}", None, None)
@@ -1646,9 +1922,9 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                         if served is not None:
                             fl["served_object"] = served.has(key)
                             stats["c3_served"] += int(fl["served_object"])
-                        if s == C6_SOURCE:
+                        if _is_c6_row(key, d):
                             stats["c6_rows"] += 1                    # V7 counts it whatever its class (M6/M8)
-                    if allow.row_names_gated(d):                     # a value names a gated id: not taken, never
+                    if allow.row_names_gated(d, t):                  # a value names a gated id: not taken, never
                         stats["withheld_values"] = True              # stored or counted - only the YES line
                         continue
                     if t == "license":                               # S4d/B32: decided after the series pass,
@@ -1682,6 +1958,19 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                         continue
                     kind = kinds[col]
                     lv, dv = l.get(col), d.get(col)
+                    is_c6 = (s == C6_SOURCE or (t == "series" and _is_c6_row(key, l))) and \
+                        (key, col) not in c7.v7_exempt
+                    if _is_withheld(dv):
+                        # D1's value named a gated id and is stored as its keyed stand-in: equal when the local
+                        # value hashes to it; otherwise V7 counts it and only the YES line says it exists (R888)
+                        if withheld_equal(salts.get(d_db), dv, lv):
+                            o.count(t, s, col, "equal_withheld")
+                            stats["equal_withheld"] += 1
+                            continue
+                        if is_c6:
+                            stats["c6_cells"] += 1
+                        stats["withheld_values"] = True
+                        continue
                     sub = []
                     if isinstance(lv, bytes) and not isinstance(dv, bytes):
                         sub.append("LOCAL-INVALID-UTF8")
@@ -1693,18 +1982,20 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                     if eq == NORM and not (unsafe_number(lv) or unsafe_number(dv)):
                         o.count(t, s, col, "equal_norm")
                         continue
-                    if s == C6_SOURCE and (key, col) not in c7.v7_exempt:
+                    if is_c6:
                         stats["c6_cells"] += 1                       # V7: BEFORE the classes (review M6)
-                    if dv == WITHHELD or allow.names_gated(lv, dv):  # a value names a gated id: local kept, and
-                        stats["withheld_values"] = True              # only the YES line says it exists (R888)
+                    if col not in KEY_COLS[t] and allow.names_gated(lv, dv):  # a NON-KEY value names a gated id:
+                        stats["withheld_values"] = True              # local kept, only the YES line (R888)
                         continue
-                    if t == "license" or (t, col) in LICENCE_REFS:
+                    if t == "license" or (t, col) in HELD_CELLS:
                         cls, dec = "LIC-HELD", HELD
                         stats["licence_held"] += 1
                         if t == "license" and col in LICENCE_FLAGS:
                             sub.append(licence_flag_direction(col, lv, dv))
                         elif t == "license":
                             sub.append("licence text")
+                        elif (t, col) in LICENCE_TEXT:
+                            sub.append("licence-condition text (attribution / terms)")
                         else:
                             sub.append(licence_ref_direction(lv, dv, flags_local, flags_d1))
                             if dv is not None and dv not in local_lic:
@@ -1825,7 +2116,9 @@ def summarise(out_dir: str, result: dict, c7: C7, inputs: dict, compare_to: str 
              "c7_runs": [r for r in c7.runs if all(x in allow.sources for x in r["sources"])],
              "c7_runs_outside_the_allow_list": "YES" if any(not all(x in allow.sources for x in r["sources"])
                                                             for r in c7.runs) else "NO",
-             "c7_sizes": {"ids": len(c7.ids), "cells": len(c7.cells),
+             # allowed ids/cells only: a total that mixed in a gated source's ids would be a gated count (L9)
+             "c7_sizes": {"ids": sum(1 for k in c7.ids if allow.series({"series_id": k})),
+                          "cells": sum(1 for (k, _c) in c7.cells if allow.series({"series_id": k})),
                           "sources": sorted(x for x in c7.srcs if x in allow.sources)},
              "outside_the_allow_list_dropped": dropped or {}, "inputs": inputs,
              "plan_counts": {k: len(v) for k, v in result["plan"].items()},
@@ -1841,7 +2134,14 @@ def summarise(out_dir: str, result: dict, c7: C7, inputs: dict, compare_to: str 
                  "The dry run reads the 11-16 local copy; the statcan lane merges, the 2026-11-27 six-cube run, the "
                  "11-17 sec_edgar sync, S5's Road B and the S4c queue are only in S11 (R3-M5).",
                  "The allow-list was applied (the local catalogue's sources minus the worker gate, denylist.ts "
-                 f"sha256 {inputs.get('gate_sha256')}); nothing outside it is compared, written, counted or named."]}
+                 f"sha256 {inputs.get('gate_sha256')}); nothing outside it is compared, written, counted or named. "
+                 "A HOSTED key is not a mention (coordinator ruling on code-review H2): an allowed row's id is "
+                 "printed whatever tokens it holds; non-key text naming a gated id is withheld.",
+                 "The 'served object' flag on C3 rows reads F:\\econ_live\\blobs\\index.db, a LIVE file, with "
+                 "mode=ro&immutable=1 (Q6): a WAL is ignored and a change during the read is not seen, so the flag "
+                 "is DIAGNOSTIC ONLY - no decision rests on it (code-review L6).",
+                 "The D1 snapshot files hold D1 licence rows the build no longer has after S4d: they go on owner "
+                 "item 37's list (code-review answer (a))."]}
         if compare_to:
             s["side_by_side"] = _side_by_side(compare_to, s, db, allow)
     finally:
@@ -1864,6 +2164,8 @@ def _side_by_side(compare_to: str, now: dict, db, allow: Allow) -> dict:
                           "delta": now["totals"].get(k, 0) - dry_tot[k]} for k in SUMMARY_METRICS}}
     oc1, oc3 = set(), set()
     old_db = dry.get("classify_db")
+    if old_db:
+        guard_input(old_db, "the --compare-to summary's classify_db")    # a path read from a file: guarded (L5)
     if old_db and os.path.exists(old_db):
         old = sqlite3.connect(ro_uri(old_db), uri=True)  # plain-open: the dry run's result file, read-only
         try:
@@ -1887,6 +2189,15 @@ def render_md(s: dict) -> str:
           for k, v in (s.get("outside_the_allow_list_dropped") or {}).items()]
     L += [f"- a differing value or a D1-only row names a gated id (kept local, not listed): "
           f"{'YES' if s['stats'].get('withheld_values') else 'NO'}"]
+    inp = s.get("inputs") or {}
+    L += [f"- D1 snapshot {db}: read {v.get('read_started_utc')} .. {v.get('read_ended_utc')}, after the CUTOVER flag "
+          f"at start/end: {v.get('cut_over_at_start')}/{v.get('cut_over_at_end')}"
+          for db, v in (inp.get("snapshot_reads") or {}).items()]
+    L += [f"- stored vs source_counts {db} (allowed sources only): "
+          + (f"{v['stored']:,} vs {v['source_counts']:,}, shortfall {v['shortfall']:,} (tolerance {v['tolerance']:,})"
+             if v.get("source_counts") is not None and v.get("stored") is not None else v.get("why", "?"))
+          + (" - OK" if v.get("ok") else " - FAILED")
+          for db, v in (inp.get("snapshot_counts") or {}).items()]
     L += ["", "## Licence cells - HELD (decided at owner item 36 under the verbatim audit)", ""]
     L += [f"- {x['table']}.{x['column']} on {x['source'] or '(licence table)'}: {x['cells']:,} cell(s), {x['direction']}"
           f" - {x['audit']}" for x in s["licence_held"]] or ["- none"]
@@ -1933,7 +2244,13 @@ def render_md(s: dict) -> str:
           f"- C3 rows with local-removal evidence (a C7 id): {st['c3_local_removal']:,}",
           f"- C3-TAKEN rows whose parent source/licence row is missing locally: {st['c3_parent_missing']:,}",
           f"- misplaced shard rows: {st['misplaced']:,}; duplicates across the two databases: {st['duplicate']:,}",
-          f"- V7 (sec_edgar level, before classes): {st['c6_cells']:,} differing cell(s), {st['c6_rows']:,} row(s)",
+          f"- V7 (sec_edgar level, before classes): {st['c6_cells']:,} differing cell(s), {st['c6_rows']:,} row(s); "
+          f"a sec_edgar row outside the allow-list (V7 cannot see it - FAILED after T0): "
+          f"{'YES' if st.get('c6_withheld') else 'NO'}",
+          f"- an approved item-17 id still present OUTSIDE the allow-list (FAILED, ruling l): "
+          f"{'YES' if st.get('del_outside_allow') else 'NO'}",
+          f"- values equal behind a withheld stand-in (a non-key text naming a gated id, equal on both sides): "
+          f"{st.get('equal_withheld', 0):,}",
           f"- numbers the D1 answer cannot carry exactly (ROUNDTRIP): {st['roundtrip']:,}",
           f"- local cells that are not valid UTF-8: {st['local_invalid_utf8']:,}", ""]
     return "\n".join(L) + "\n"
@@ -1956,10 +2273,15 @@ def cmd_classify(a) -> int:
     if cutover.is_cut_over() and not (a.c7_queue and a.s4c_receipt and a.c7_runs):
         raise Refused("refused: after T0 the S4c queue copy (--c7-queue), its S4c receipt (--s4c-receipt) and the "
                       "reviewed run list (--c7-runs) are required")
+    if cutover.is_cut_over() and not a.compare_to:
+        raise Refused("refused: after T0 --compare-to (the dry run's summary.json) is required: S11's summary needs "
+                      "(b2)'s side-by-side and S12's 'new since the dry run' lists (code-review L3)")
     snapshots = {db: os.path.join(a.snapshot_dir, f"d1_{db}.sqlite") for db in DATABASES}
     for db, p in snapshots.items():
         if not os.path.isfile(p):
             raise Refused(f"refused: no D1 snapshot for {db} in --snapshot-dir (run read-d1 first)")
+    reads = check_snapshots_for_use(snapshots)                        # complete; after T0 read wholly after it (H1)
+    counts = snapshot_count_check(snapshots)                           # stored vs source_counts (M1)
     gate = load_gate()
     runloc, reg_sha = load_run_locations()
     shard = load_shard_map()
@@ -1982,7 +2304,9 @@ def cmd_classify(a) -> int:
     served = ServedIndex(a.served_index) if a.served_index else None
     utc0 = utcnow()
     say("classify: hashing the catalogue ...")
+    t_hash = time.monotonic()
     cat_sha = file_sha256(catalogue)
+    cat_hash_s = time.monotonic() - t_hash
     result = classify(catalogue=catalogue, snapshots=snapshots, out_dir=out, allow=allow, runloc=runloc, shard=shard,
                       c1=c1, c3n=c3n, c7=c7, deletes=deletes, manifest=manifest, served=served)
     if file_sha256(catalogue) != cat_sha:
@@ -1991,16 +2315,19 @@ def cmd_classify(a) -> int:
                              "approved_deletes": a.approved_deletes, "manifest": a.manifest,
                              "s4c_receipt": a.s4c_receipt})
     inputs.update(gate_sha256=gate_sha(), registry_sha256=reg_sha, queue=queue_info, c7_notes=c7.notes,
-                  allow_list_sha256=allow.digest(), licence_refs=sorted(allow.licence_refs))
+                  allow_list_sha256=allow.digest(), licence_refs=sorted(allow.licence_refs), snapshot_reads=reads,
+                  snapshot_counts=counts, catalogue_hash_s=round(cat_hash_s, 1))
     st = result["stats"]
-    plan = {"version": 2, "created_utc": utcnow(), "classify_started_utc": utc0,
+    count_failed = int(any(not v["ok"] for v in counts.values()))
+    plan = {"version": 3, "created_utc": utcnow(), "classify_started_utc": utc0,
             "tool_sha256": file_sha256(os.path.abspath(__file__)), "cut_over_at_classify": cutover.is_cut_over(),
             "catalogue": {"path": os.path.abspath(catalogue), "sha256": cat_sha, "size": os.path.getsize(catalogue)},
-            "snapshots": {db: {"path": os.path.abspath(p), "sha256": file_sha256(p)} for db, p in snapshots.items()},
+            "snapshots": {db: {"path": os.path.abspath(p), "sha256": file_sha256(p), **reads[db]}
+                          for db, p in snapshots.items()},
             "inputs": inputs, "writes": result["plan"], "digests": result["digests"],
-            "counts": {k: st[k] for k in ("c6_cells", "c6_rows", "del_both", "del_withheld", "c3_parent_missing",
-                                          "licence_held")}
-            | {k: len(v) for k, v in result["plan"].items()}}
+            "counts": {k: int(st[k]) for k in ("c6_cells", "c6_rows", "c6_withheld", "del_both", "del_withheld",
+                                               "del_outside_allow", "c3_parent_missing", "licence_held")}
+            | {"snapshot_count_failed": count_failed} | {k: len(v) for k, v in result["plan"].items()}}
     plan_path = os.path.join(out, "plan.json")
     write_json(plan_path, plan)
     sha = file_sha256(plan_path)
@@ -2011,14 +2338,20 @@ def cmd_classify(a) -> int:
     say("totals: " + json.dumps(s["totals"]))
     rc = 0
     if st["del_withheld"]:
-        say("FAILED: an item-17 id cannot be planned (a value in it names a gated id): YES - for the R888 process")
+        say("FAILED: an item-17 id cannot be planned (a value in it names a gated id, or its row is outside the "
+            "allow-list): YES - for the R888 process")
         rc = 1
     if st["del_both"]:
         say(f"FAILED: {st['del_both']} item-17 id(s) are still on BOTH sides (B31 incomplete; listed in the summary)")
         rc = 1
-    if cutover.is_cut_over() and (st["c6_cells"] or st["c6_rows"]):
+    if cutover.is_cut_over() and (st["c6_cells"] or st["c6_rows"] or st["c6_withheld"]):
         say(f"FAILED (V7): after T0 sec_edgar must be level (Road B): {st['c6_cells']} differing cell(s), "
-            f"{st['c6_rows']} sec_edgar row(s) only in D1")
+            f"{st['c6_rows']} sec_edgar row(s) only in D1; a sec_edgar row outside the allow-list: "
+            f"{'YES' if st['c6_withheld'] else 'NO'}")
+        rc = 1
+    if count_failed:
+        say("FAILED: a snapshot's stored rows fall short of D1's source_counts, or were not measured: "
+            + json.dumps(counts))
         rc = 1
     return rc
 
@@ -2042,15 +2375,17 @@ def preflight_writes(con, plan: dict, apply: bool = True) -> None:
     difference (before Road B the dry run's rehearsal expects sec_edgar differences and rehearses them)."""
     c = plan["counts"]
     checks = [("del_both", "item-17 ids are on both sides"), ("del_withheld", "an item-17 id cannot be planned"),
-              ("c3_parent_missing", "rows to insert lack their parent source/licence rows (R346)")]
+              ("c3_parent_missing", "rows to insert lack their parent source/licence rows (R346)"),
+              ("snapshot_count_failed", "a D1 snapshot's stored rows fall short of D1's source_counts (M1)")]
     if apply:
         checks += [("c6_cells", "sec_edgar (V7) differs"),
-                   ("c6_rows", "sec_edgar rows are only in D1 (Road B did not finish)")]
+                   ("c6_rows", "sec_edgar rows are only in D1 (Road B did not finish)"),
+                   ("c6_withheld", "a sec_edgar row is outside the allow-list (V7 cannot see it)")]
     for k, why in checks:
         if c.get(k):
             raise Refused(f"refused before any write: {why}")
     for t, _key, col, _kind, _b, _a, cls in plan["writes"]["cells"]:
-        if cls == "LIC-HELD" or t == "license" or (t, col) in LICENCE_REFS:
+        if cls == "LIC-HELD" or t == "license" or (t, col) in HELD_CELLS:
             raise Refused("refused before any write: the plan writes a licence cell (licence cells are HELD)")
     for t, _key, _row in plan["writes"]["inserts"] + plan["writes"]["deletes"]:
         if t != "series":                    # S4d/B32: a licence (or source) row is never inserted or deleted here
@@ -2063,27 +2398,16 @@ def preflight_writes(con, plan: dict, apply: bool = True) -> None:
             raise Refused(f"refused before any write: {h(key)} lacks its parent source/licence row (R346)")
 
 
-def apply_writes(con, plan: dict, out_dir: str, label: str) -> dict:
-    """The planned writes in chunks of WRITE_CHUNK, each chunk one IMMEDIATE transaction, each row re-read and
-    compared with the plan's before value first. The plan (with every before value) is on disk before this runs."""
+def apply_writes(con, plan: dict, out_dir: str, label: str, *, in_txn: bool = False) -> dict:
+    """The planned writes, each row re-read and compared with the plan's before value first. The plan (with every
+    before value) is on disk before this runs. ALL writes are ONE transaction (code-review M3): with in_txn the
+    caller has opened it (run_plan: the writes, the FTS rebuild and verify together); without, this function opens
+    BEGIN IMMEDIATE itself and ROLLS BACK on any failure, so nothing is ever half-applied."""
     preflight_writes(con, plan, apply=(label == "apply"))
     w = plan["writes"]
     done = {"cells": 0, "inserts": 0, "deletes": 0}
-    rec = {"label": label, "utc_start": utcnow(), "done": done}
+    rec = {"label": label, "utc_start": utcnow(), "done": done, "one_transaction": True}
     write_json(os.path.join(out_dir, f"{label}_before.json"), {"utc": utcnow(), "writes": w})
-
-    def run(items, body, what):
-        for k in range(0, len(items), WRITE_CHUNK):
-            part = items[k:k + WRITE_CHUNK]
-            con.execute("BEGIN IMMEDIATE")
-            try:
-                for it in part:
-                    body(it)
-            except BaseException:
-                con.execute("ROLLBACK")
-                raise
-            con.execute("COMMIT")
-            done[what] += len(part)
 
     def cell(it):
         t, key, col, _kind, before, after, _cls = it
@@ -2110,10 +2434,28 @@ def apply_writes(con, plan: dict, out_dir: str, label: str) -> dict:
             raise Refused(f"refused: {t} {h(key)} changed since the plan was made (delete)")
         if con.execute(f'DELETE FROM "{t}" WHERE "{PK[t]}" = ?', (key,)).rowcount != 1:
             raise Refused(f"refused: the DELETE of {t} {h(key)} matched no row")
+
+    def body():
+        for what, items, fn in (("cells", w["cells"], cell), ("inserts", w["inserts"], ins),
+                                ("deletes", w["deletes"], dele)):
+            for it in items:
+                fn(it)
+                done[what] += 1
     try:
-        run(w["cells"], cell, "cells")
-        run(w["inserts"], ins, "inserts")
-        run(w["deletes"], dele, "deletes")
+        if in_txn:
+            body()
+        else:
+            if con.isolation_level is not None:
+                raise Refused("refused: the writes need a connection with isolation_level=None (one explicit "
+                              "transaction)")
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                body()
+            except BaseException:
+                con.execute("ROLLBACK")
+                rec["rolled_back"] = True
+                raise
+            con.execute("COMMIT")
     finally:
         rec["utc_end"] = utcnow()
         write_json(os.path.join(out_dir, f"{label}_writes.json"), rec)
@@ -2173,36 +2515,58 @@ def _peak_rss() -> int | None:
         return None
 
 
-def fts_rebuild(con, form: str) -> None:
-    """series_fts from `series`, in ONE explicit transaction on a connection with isolation_level=None (review M2).
-    "rebuild_fts" = the core catalogue module's rebuild_fts (the same two statements, pinned by the tests);
-    "drop_create" = DROP, re-CREATE from the DDL captured from sqlite_master, INSERT ... SELECT, and the new DDL
-    text must equal the captured text byte for byte before COMMIT."""
+def _fts_ddl(con, form: str) -> str:
     if form not in FTS_FORMS:
         raise Refused(f"refused: unknown FTS form {form!r}")
-    if con.isolation_level is not None:
-        raise Refused("refused: the FTS rebuild needs a connection with isolation_level=None (explicit transaction)")
     ddl = con.execute("SELECT sql FROM sqlite_master WHERE name='series_fts'").fetchone()
     if not ddl or not ddl[0]:
         raise Refused("refused: no series_fts DDL in this catalogue")
+    return ddl[0]
+
+
+def _fts_statements(con, form: str, ddl: str) -> None:
+    """The rebuild's statements, inside a transaction the CALLER holds. "rebuild_fts" = the core catalogue module's
+    rebuild_fts (the same two statements, pinned by the tests); "drop_create" = DROP, re-CREATE from the DDL captured
+    from sqlite_master, INSERT ... SELECT, and the new DDL text must equal the captured text byte for byte."""
+    if form == "rebuild_fts":
+        con.execute(FTS_DELETE)
+        con.execute(FTS_INSERT)
+    else:
+        con.execute("DROP TABLE series_fts")
+        con.execute(ddl)
+        if con.execute("SELECT sql FROM sqlite_master WHERE name='series_fts'").fetchone()[0] != ddl:
+            raise Failed("the re-created series_fts DDL differs from the captured text")
+        con.execute(FTS_INSERT)
+
+
+def fts_rebuild(con, form: str) -> None:
+    """series_fts from `series` ALONE, in ONE explicit transaction on a connection with isolation_level=None (review
+    M2). Used for the rehearsal's second form; the plan itself goes through run_plan."""
+    if con.isolation_level is not None:
+        raise Refused("refused: the FTS rebuild needs a connection with isolation_level=None (explicit transaction)")
+    ddl = _fts_ddl(con, form)
     con.execute("BEGIN IMMEDIATE")
     try:
-        if form == "rebuild_fts":
-            con.execute(FTS_DELETE)
-            con.execute(FTS_INSERT)
-        else:
-            con.execute("DROP TABLE series_fts")
-            con.execute(ddl[0])
-            if con.execute("SELECT sql FROM sqlite_master WHERE name='series_fts'").fetchone()[0] != ddl[0]:
-                raise Failed("the re-created series_fts DDL differs from the captured text")
-            con.execute(FTS_INSERT)
+        _fts_statements(con, form, ddl)
     except BaseException:
         con.execute("ROLLBACK")
         raise
     con.execute("COMMIT")
 
 
+def _db_sizes(con, db_path: str, st0, s: Sampler, pragmas: dict) -> dict:
+    after = {p: con.execute(f"PRAGMA {p}").fetchone()[0] for p in ("page_count", "freelist_count")}
+    size = os.stat(db_path).st_size
+    return {"journal_peak_bytes": s.peak, "free_min_bytes": s.free_min, "samples": s.samples,
+            "peak_rss_bytes": _peak_rss(), "before": pragmas, "after": after, "db_bytes_before": st0.st_size,
+            "db_bytes_after": size, "growth_bytes": max(0, size - st0.st_size),
+            "drive": os.path.splitdrive(os.path.abspath(db_path))[0],
+            "series_rows": con.execute("SELECT COUNT(*) FROM series").fetchone()[0],
+            "series_fts_rows": con.execute("SELECT COUNT(*) FROM series_fts").fetchone()[0]}
+
+
 def timed_fts(con, db_path: str, form: str, every: float) -> dict:
+    """The FTS rebuild alone, timed (the rehearsal's second form)."""
     s = Sampler(db_path, every)
     st0 = os.stat(db_path)
     pragmas = {p: con.execute(f"PRAGMA {p}").fetchone()[0] for p in ("journal_mode", "page_size", "page_count",
@@ -2214,15 +2578,55 @@ def timed_fts(con, db_path: str, form: str, every: float) -> dict:
         fts_rebuild(con, form)
     finally:
         s.stop()
-    after = {p: con.execute(f"PRAGMA {p}").fetchone()[0] for p in ("page_count", "freelist_count")}
     rec = {"form": form, "utc_start": utc0, "utc_end": utcnow(), "elapsed_s": round(time.monotonic() - t0, 3),
-           "cpu_s": round(time.process_time() - c0, 3), "journal_peak_bytes": s.peak, "free_min_bytes": s.free_min,
-           "samples": s.samples, "peak_rss_bytes": _peak_rss(), "before": pragmas, "after": after,
-           "db_bytes_before": st0.st_size, "db_bytes_after": os.stat(db_path).st_size,
-           "growth_bytes": max(0, os.stat(db_path).st_size - st0.st_size),
-           "drive": os.path.splitdrive(os.path.abspath(db_path))[0]}
-    rec["series_rows"] = con.execute("SELECT COUNT(*) FROM series").fetchone()[0]
-    rec["series_fts_rows"] = con.execute("SELECT COUNT(*) FROM series_fts").fetchone()[0]
+           "fts_s": round(time.monotonic() - t0, 3), "cpu_s": round(time.process_time() - c0, 3)}
+    rec.update(_db_sizes(con, db_path, st0, s, pragmas))
+    return rec
+
+
+def run_plan(con, db_path: str, plan: dict, out_dir: str, label: str, form: str, every: float, allow,
+             rec: dict) -> dict:
+    """THE PLAN IN ONE TRANSACTION (code-review M3; R1919 "refresh the FTS row in the same transaction as any
+    title/geography UPDATE"): BEGIN IMMEDIATE; every planned write; the FTS rebuild; verify V1-V5 on the
+    uncommitted state; COMMIT only when verify passes. Any failure - a refused write, an FTS error, a failed
+    verify, a kill - ROLLS BACK (a killed process leaves a hot journal that SQLite rolls back on the next open), so
+    the catalogue stays byte for byte as classified and the same pinned plan can be applied again. `rec` is filled
+    as it goes (the caller writes it even on a failure): the time pieces the S11 slot must hold (code-review L4)."""
+    if con.isolation_level is not None:
+        raise Refused("refused: the plan needs a connection with isolation_level=None (one explicit transaction)")
+    ddl = _fts_ddl(con, form)
+    s = Sampler(db_path, every)
+    st0 = os.stat(db_path)
+    pragmas = {p: con.execute(f"PRAGMA {p}").fetchone()[0] for p in ("journal_mode", "page_size", "page_count",
+                                                                     "freelist_count")}
+    rec.update(form=form, utc_start=utcnow(), one_transaction=True)
+    s.start()
+    t0, c0 = time.monotonic(), time.process_time()
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        rec["writes"] = apply_writes(con, plan, out_dir, label, in_txn=True)
+        t1 = time.monotonic()
+        rec["writes_s"] = round(t1 - t0, 3)
+        _fts_statements(con, form, ddl)
+        t2 = time.monotonic()
+        rec["fts_s"] = round(t2 - t1, 3)
+        v = verify(con, plan, allow)
+        t3 = time.monotonic()
+        rec["verify"], rec["verify_s"] = v, round(t3 - t2, 3)
+        if not v["ok"]:
+            raise Failed(f"verify failed inside the transaction ({json.dumps(v['failed'])}): ROLLED BACK - the "
+                         f"catalogue is unchanged and the same plan may be applied again")
+    except BaseException:
+        con.execute("ROLLBACK")
+        s.stop()
+        rec.update(rolled_back=True, utc_end=utcnow(), elapsed_s=round(time.monotonic() - t0, 3))
+        raise
+    con.execute("COMMIT")
+    t4 = time.monotonic()
+    s.stop()
+    rec.update(rolled_back=False, commit_s=round(t4 - t3, 3), elapsed_s=round(t4 - t0, 3),
+               cpu_s=round(time.process_time() - c0, 3), utc_end=utcnow())
+    rec.update(_db_sizes(con, db_path, st0, s, pragmas))
     return rec
 
 
@@ -2269,6 +2673,7 @@ def verify(con, plan: dict, allow: Allow) -> dict:
     series_fts equals the one in series (FTS_INSERT's own projection) - one more scan of series_fts, no temp
     space, so a rebuild that silently did nothing (equal counts, stale text) is caught."""
     w = plan["writes"]
+    t_v0 = time.monotonic()
     bad = {"V1": [], "V2": [], "V3": [], "V4": [], "V5": [], "V5_content": []}
     for t, key, col, kind, _before, after, _cls in w["cells"]:
         r = con.execute(f'SELECT "{col}" FROM "{t}" WHERE "{PK[t]}" = ?', (key,)).fetchone()
@@ -2287,6 +2692,7 @@ def verify(con, plan: dict, allow: Allow) -> dict:
     dig = Digests()
     con.text_factory = _text_or_bytes
     want_fts = FtsMultiset()
+    t_v4 = time.monotonic()
     for t in TABLES:
         cols = [r[1] for r in con.execute(f'PRAGMA table_info("{t}")')]
         for row in _local_iter(con, t, cols):
@@ -2295,6 +2701,7 @@ def verify(con, plan: dict, allow: Allow) -> dict:
                 want_fts.add(row.get("series_id"), row.get("title"), row.get("geography"))
     got, want = dig.result(), plan["digests"]["after"]
     bad["V4"] = sorted(k for k in set(got) | set(want) if got.get(k) != want.get(k))
+    v4_s = time.monotonic() - t_v4
     n_s = con.execute("SELECT COUNT(*) FROM series").fetchone()[0]
     n_f = con.execute("SELECT COUNT(*) FROM series_fts").fetchone()[0]
     if n_s != n_f:
@@ -2306,7 +2713,8 @@ def verify(con, plan: dict, allow: Allow) -> dict:
     if got_fts.value() != want_fts.value():                           # equal counts can still hide a stale index
         bad["V5_content"] = ["series_fts (series_id, title, geography) differs from series"]
     return {"ok": not any(bad.values()), "failed": {k: len(v) for k, v in bad.items() if v},
-            "fts_content_check_s": round(time.monotonic() - t_fts, 1),
+            "fts_content_check_s": round(time.monotonic() - t_fts, 1), "v4_s": round(v4_s, 1),
+            "verify_s": round(time.monotonic() - t_v0, 1),
             "failed_buckets": [b for b in bad["V4"] if b != "_withheld"],
             "withheld_bucket_changed": "_withheld" in bad["V4"], "series": n_s, "series_fts": n_f, "utc": utcnow()}
 
@@ -2320,6 +2728,8 @@ def _allow_for_plan(con, plan: dict, gate: set, c3n: set) -> Allow:
 
 
 def cmd_rehearse(a) -> int:
+    if cutover.is_cut_over():                                           # an explicit refusal, exit 2 (design L11)
+        raise Refused("refused: rehearse is a before-T0 step (it writes a plain COPY); after T0 nothing is rehearsed")
     cutover.refuse_if_cut_over("reconcile_catalogue rehearse - it writes a plain COPY, a before-T0 step")
     refuse_e_checkout()
     out = guard_out(a.out)
@@ -2328,7 +2738,10 @@ def cmd_rehearse(a) -> int:
     if why:
         raise Refused(f"refused: the rehearse target: {why}")
     plan = load_plan(guard_input(a.plan, "--plan"), a.plan_sha)
-    if _abs(plan["catalogue"]["path"]) != _abs(path) or file_sha256(path) != plan["catalogue"]["sha256"]:
+    t_hash = time.monotonic()
+    same = _abs(plan["catalogue"]["path"]) == _abs(path) and file_sha256(path) == plan["catalogue"]["sha256"]
+    hash_s = round(time.monotonic() - t_hash, 3)
+    if not same:
         raise Refused("refused: the copy is not the one the plan was made from (path or sha256 differs)")
     gate = load_gate()
     if plan["inputs"].get("gate_sha256") != gate_sha():
@@ -2336,14 +2749,21 @@ def cmd_rehearse(a) -> int:
     c3n = load_c3(guard_input(a.c3, "--c3", own_list=True))
     queries = load_ids(guard_input(a.queries, "--queries")) if a.queries else None
     con = _catalogue_rw(path)
-    rec = {"step": "rehearse", "utc_start": utcnow(), "plan_sha256": a.plan_sha}
+    rec = {"step": "rehearse", "utc_start": utcnow(), "plan_sha256": a.plan_sha, "hash_s": hash_s,
+           "catalogue_bytes": os.path.getsize(path)}
     try:
         allow = _allow_for_plan(con, plan, gate, c3n)
-        rec["writes"] = apply_writes(con, plan, out, "rehearse")
-        rec["fts_A"] = timed_fts(con, path, "rebuild_fts", a.sample_every)
+        rec["fts_A"] = {}
+        run_plan(con, path, plan, out, "rehearse", "rebuild_fts", a.sample_every, allow, rec["fts_A"])
+        rec["verify"] = rec["fts_A"]["verify"]
+        # S11's lock-held time (code-review L4): the build hash + the one transaction (writes + FTS + verify)
+        rec["s11_lock_held_estimate_s"] = round(hash_s + rec["fts_A"]["elapsed_s"], 3)
+        rec["s11_pieces_s"] = {"hash": hash_s, "writes": rec["fts_A"]["writes_s"], "fts": rec["fts_A"]["fts_s"],
+                               "verify": rec["fts_A"]["verify_s"], "v4": rec["verify"].get("v4_s"),
+                               "v5_content": rec["verify"].get("fts_content_check_s"),
+                               "commit": rec["fts_A"].get("commit_s")}
         qs = probe_queries(con, queries)
         res_a = match_sets(con, qs)
-        rec["verify"] = verify(con, plan, allow)
         if a.fts_both:
             ddl_a = con.execute("SELECT sql FROM sqlite_master WHERE name='series_fts'").fetchone()[0]
             rec["fts_B"] = timed_fts(con, path, "drop_create", a.sample_every)
@@ -2361,8 +2781,10 @@ def cmd_rehearse(a) -> int:
         rec["utc_end"] = utcnow()
         write_json(os.path.join(out, "rehearse.json"), rec)
     ok = rec.get("verify", {}).get("ok")
-    say(f"rehearse: verify {'OK' if ok else 'FAILED'}; FTS {rec['fts_A']['elapsed_s']} s, journal peak "
-        f"{rec['fts_A']['journal_peak_bytes']:,} B, growth {rec['fts_A']['growth_bytes']:,} B")
+    say(f"rehearse: verify {'OK' if ok else 'FAILED'}; one transaction {rec['fts_A']['elapsed_s']} s (writes "
+        f"{rec['fts_A']['writes_s']} s, FTS {rec['fts_A']['fts_s']} s, verify {rec['fts_A']['verify_s']} s), hash "
+        f"{rec['hash_s']} s; journal peak {rec['fts_A']['journal_peak_bytes']:,} B, growth "
+        f"{rec['fts_A']['growth_bytes']:,} B")
     return 0 if ok else 1
 
 
@@ -2374,11 +2796,16 @@ def cmd_apply(a) -> int:
     plan = load_plan(guard_input(a.plan, "--plan"), a.plan_sha)
     if _abs(plan["catalogue"]["path"]) != _abs(path):
         raise Refused("refused: the plan was made from another file, not the build")
+    t_apply = time.monotonic()
     if not plan.get("cut_over_at_classify"):
         raise Refused("refused: the plan was classified before the flag; S11 needs a classify after S10")
     for db, snap in plan["snapshots"].items():
         if not os.path.isfile(snap["path"]) or file_sha256(snap["path"]) != snap["sha256"]:
             raise Refused(f"refused: the {db} D1 snapshot differs from the plan's")
+    reads = check_snapshots_for_use({db: snap["path"] for db, snap in plan["snapshots"].items()})   # H1, again
+    for db, snap in plan["snapshots"].items():
+        if any(snap.get(k) != reads[db].get(k) for k in reads[db]):
+            raise Refused(f"refused: the {db} snapshot's read times differ from the plan's")
     q = (plan["inputs"] or {}).get("queue")
     if not q or not os.path.isfile(q["path"]) or file_sha256(q["path"]) != q["sha256"]:
         raise Refused("refused: the queue copy differs from the plan's (or the plan has none)")
@@ -2398,18 +2825,27 @@ def cmd_apply(a) -> int:
         raise Refused(f"refused: {free:,} B free on the build's drive, under 1.5 x (journal peak + file growth) "
                       f"= 1.5 x {need:,} B")
     say("apply: hashing the build ...")
-    if file_sha256(path) != plan["catalogue"]["sha256"]:
+    t_hash = time.monotonic()
+    same = file_sha256(path) == plan["catalogue"]["sha256"]
+    hash_s = round(time.monotonic() - t_hash, 3)
+    if not same:
         raise Refused("refused: the build changed since the plan was made (sha256 differs)")
     con = _catalogue_rw(path)
-    rec = {"step": "apply", "utc_start": utcnow(), "plan_sha256": a.plan_sha, "fts_form": a.fts_form}
+    rec = {"step": "apply", "utc_start": utcnow(), "plan_sha256": a.plan_sha, "fts_form": a.fts_form,
+           "hash_s": hash_s, "catalogue_bytes": os.path.getsize(path)}
     try:
         allow = _allow_for_plan(con, plan, gate, c3n)
-        rec["writes"] = apply_writes(con, plan, out, "apply")
-        rec["fts"] = timed_fts(con, path, a.fts_form, a.sample_every)
-        rec["verify"] = verify(con, plan, allow)
+        rec["fts"] = {}
+        run_plan(con, path, plan, out, "apply", a.fts_form, a.sample_every, allow, rec["fts"])
+        rec["verify"] = rec["fts"]["verify"]
+        rec["s11_pieces_s"] = {"hash": hash_s, "writes": rec["fts"]["writes_s"], "fts": rec["fts"]["fts_s"],
+                               "verify": rec["fts"]["verify_s"], "v4": rec["verify"].get("v4_s"),
+                               "v5_content": rec["verify"].get("fts_content_check_s"),
+                               "commit": rec["fts"].get("commit_s")}
     finally:
         con.close()
         rec["utc_end"] = utcnow()
+        rec["apply_s"] = round(time.monotonic() - t_apply, 3)          # the lock-held span inside this step
         write_json(os.path.join(out, "apply.json"), rec)
     ok = rec.get("verify", {}).get("ok")
     say(f"apply: verify {'OK' if ok else 'FAILED ' + json.dumps(rec.get('verify', {}).get('failed'))}")
@@ -2455,6 +2891,7 @@ def search_compare(con, queries: list[str], classify_db: str, budget: Budget, al
     tm = TextMatcher(ddl)
     cdb = sqlite3.connect(ro_uri(classify_db), uri=True)  # plain-open: the tool's own result file, read-only
     c3 = {k for (k,) in cdb.execute("SELECT key FROM rows WHERE tbl='series' AND cls='C3'")}
+    c3taken = {k for (k,) in cdb.execute("SELECT key FROM rows WHERE tbl='series' AND cls='C3-TAKEN'")}
     c4 = {k for (k,) in cdb.execute("SELECT key FROM rows WHERE tbl='series' AND cls='C4'")}
     c4del = {k for (k,) in cdb.execute("SELECT key FROM rows WHERE tbl='series' AND cls='C4-DEL'")}
     textdiff = {}
@@ -2503,6 +2940,8 @@ def search_compare(con, queries: list[str], classify_db: str, budget: Budget, al
                 td = textdiff.get(sid, {})
                 if sid in c3:
                     why = "C3 (D1 only, not taken)"
+                elif sid in c3taken and not con.execute("SELECT 1 FROM series WHERE series_id = ?", (sid,)).fetchone():
+                    why = "C3-TAKEN (the plan inserts it; the catalogue does not have it yet)"   # code-review L8
                 elif sid in c4del:
                     why = "C4-DEL (deleted locally)"
                 elif (r.get("fts_title"), r.get("fts_geo")) != (r.get("series_title"), r.get("series_geo")):
